@@ -3230,12 +3230,10 @@
           track.appendChild(clone);
         }
         
-        const groupStyle = getComputedStyle(baseGroup);
-        const groupGap = parseFloat(groupStyle.gap) || 0;
         const pxPerSecond = window.innerWidth <= 520 ? 90 : window.innerWidth <= 860 ? 100 : 110;
         const duration = Math.max(36, loopDistance / pxPerSecond);
 
-        track.style.setProperty('--review-loop-distance', `${(loopDistance + groupGap).toFixed(3)}px`);
+        track.style.setProperty('--review-loop-distance', `${loopDistance.toFixed(3)}px`);
         track.style.setProperty('--review-loop-duration', `${duration.toFixed(2)}s`);
       }
 
