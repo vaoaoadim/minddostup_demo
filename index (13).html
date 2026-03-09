@@ -1,0 +1,3357 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#eef6ff" />
+  <title>@mind — дневник самопрограммирования</title>
+
+  <!--
+    =========================
+    НАСТРОЙКИ (МЕНЯТЬ ТУТ)
+    =========================
+    1) Цена:
+       PRICE_RUB = 990
+       PRICE_OLD_RUB = 1490
+       PRICE_KOPEKS = 99000   (в копейках для бэка)
+
+    2) API эндпоинты:
+       API_CREATE_PAYMENT = "/api/create-payment"
+       API_WEBHOOK        = "/api/webhook"     (упоминается в комментах, фронту не нужен)
+       API_RESEND_ACCESS  = "/api/resend"      (опционально, если сделаешь)
+       MOCK_MODE = false   (true — без бэка имитируем оплату)
+
+    3) Контакты:
+       SUPPORT_EMAIL = "support@yourdomain.ru"
+
+    4) Ссылка на приложение (то, что уйдёт на email):
+       APP_URL = "https://vaoaoadim.github.io/mind/"  (пример)
+
+    =========================
+    ЮKASSA СХЕМА (РЕАЛЬНАЯ)
+    =========================
+    Front:
+      POST /api/create-payment  { email, amount: 99000, description, metadata }
+      <- { confirmation_url }
+      window.location = confirmation_url
+
+    Back:
+      1) Создаёт платеж в ЮKassa (секреты ТОЛЬКО на сервере)
+      2) Возвращает confirmation_url
+      3) Получает webhook от ЮKassa на /api/webhook
+      4) Проверяет подпись/идемпотентность, статус succeeded
+      5) Отправляет письмо с ссылкой (APP_URL) на email покупателя
+      6) (Опционально) хранит факт оплаты + email в БД, чтобы делать resend
+
+    ВАЖНО:
+      - Никаких секретов ЮKassa во фронте.
+      - В /api/create-payment используй idempotence_key.
+      - В webhook проверяй source (IP/headers) + подпись, если используешь.
+  -->
+
+  <style>
+    /* =========================================================
+       DESIGN SYSTEM — "clarity / mental health / sky" vibe
+       ========================================================= */
+
+    :root{
+      --bg: #eef6ff;
+      --bg2:#f8fbff;
+      --ink:#0b1220;
+      --muted: rgba(11,18,32,.62);
+      --muted2: rgba(11,18,32,.42);
+      --line: rgba(11,18,32,.10);
+      --line2: rgba(11,18,32,.14);
+
+      --card:#ffffff;
+      --card2: rgba(255,255,255,.72);
+
+      --shadow: 0 18px 60px rgba(2,6,23,.10);
+      --shadow2: 0 24px 90px rgba(109,94,252,.14);
+
+      --violet:#6d5efc;
+      --violet2:#a78bfa;
+      --violet3:#d6ccff;
+
+      --radius-xl: 28px;
+      --radius-lg: 22px;
+      --radius-md: 16px;
+      --radius-sm: 12px;
+
+      --pad: 18px;
+      --max: 1040px;
+
+      --tap: 44px;
+
+      --ease: cubic-bezier(.2,.9,.2,1);
+      --ease2: cubic-bezier(.2,.8,.2,1);
+
+      /* accent font — no external загрузки, но даём "изящный" fallback */
+      --font-ui: system-ui,-apple-system,Segoe UI,Roboto,Arial,"Apple Color Emoji","Segoe UI Emoji";
+      --font-accent: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, "Cormorant Garamond", Georgia, serif;
+
+      /* animated gradient for accents (not neon) */
+      --gradA: linear-gradient(90deg, rgba(109,94,252,.95), rgba(167,139,250,.90), rgba(109,94,252,.95));
+      --gradB: linear-gradient(90deg, rgba(109,94,252,.82), rgba(214,204,255,.92), rgba(109,94,252,.82));
+    }
+
+    *{ box-sizing:border-box; }
+    html,body{ height:100%; overflow-x:hidden; }
+    body{
+      margin:0;
+      color:var(--ink);
+      background: var(--bg);
+      font-family: var(--font-ui);
+      -webkit-font-smoothing: antialiased;
+      text-rendering: geometricPrecision;
+      overflow-x:hidden;
+    }
+
+    a{ color:inherit; text-decoration:none; }
+    button, input{ font-family: inherit; }
+    .sr{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); border:0; }
+
+    /* =========================================================
+       BACKGROUND SKY LAYERS (procedural, no images)
+       ========================================================= */
+
+    .sky{
+      position:fixed;
+      inset:0;
+      z-index:-5;
+      background:
+        linear-gradient(180deg, #f4f8ff 0%, #edf5ff 32%, #f8f4ff 100%);
+      overflow:hidden;
+    }
+
+    .rainbowLayer{
+      position:absolute;
+      inset:-45vh -40vw;
+      pointer-events:none;
+      mix-blend-mode: screen;
+      opacity:.42;
+      filter: blur(14px) saturate(124%);
+      will-change: transform;
+    }
+    .rainbowLayer.r1{
+      background:
+        conic-gradient(from 60deg at 20% 18%,
+          rgba(255,82,145,.34),
+          rgba(255,160,87,.30),
+          rgba(255,224,97,.30),
+          rgba(117,245,170,.30),
+          rgba(92,189,255,.34),
+          rgba(159,120,255,.34),
+          rgba(255,82,145,.34)),
+        radial-gradient(860px 560px at 72% 24%, rgba(94,172,255,.28), transparent 72%),
+        radial-gradient(980px 620px at 40% 82%, rgba(255,120,210,.22), transparent 74%);
+      animation: rainbowPulse 16s linear infinite alternate;
+    }
+    .rainbowLayer.r2{
+      opacity:.34;
+      filter: blur(20px) saturate(132%);
+      background:
+        conic-gradient(from 280deg at 78% 34%,
+          rgba(255,105,180,.28),
+          rgba(255,182,92,.24),
+          rgba(134,255,166,.22),
+          rgba(108,206,255,.24),
+          rgba(185,124,255,.28),
+          rgba(255,105,180,.28)),
+        radial-gradient(740px 520px at 18% 66%, rgba(255,212,90,.18), transparent 70%),
+        radial-gradient(860px 560px at 82% 86%, rgba(118,255,242,.16), transparent 72%);
+      animation: rainbowPulse 21s linear infinite alternate-reverse;
+    }
+
+    .chaosField{
+      position:absolute;
+      inset:-20vh -10vw;
+      pointer-events:none;
+      opacity:.34;
+      filter: blur(.4px) saturate(118%);
+      will-change: transform;
+      background:
+        radial-gradient(circle at 12% 18%, rgba(255,88,137,.44) 0 2px, transparent 3px),
+        radial-gradient(circle at 24% 72%, rgba(108,207,255,.36) 0 2px, transparent 3px),
+        radial-gradient(circle at 36% 38%, rgba(255,210,97,.34) 0 2px, transparent 3px),
+        radial-gradient(circle at 48% 84%, rgba(139,251,178,.34) 0 2px, transparent 3px),
+        radial-gradient(circle at 62% 18%, rgba(181,124,255,.38) 0 2px, transparent 3px),
+        radial-gradient(circle at 76% 58%, rgba(255,148,82,.34) 0 2px, transparent 3px),
+        radial-gradient(circle at 88% 28%, rgba(106,183,255,.38) 0 2px, transparent 3px);
+      background-size: 440px 380px;
+      animation: chaosFloat 18s linear infinite;
+    }
+
+    /* "cloud paint" using multiple soft radial layers */
+    .sky::before{
+      content:"";
+      position:absolute;
+      inset:-20vh -20vw;
+      background:
+        radial-gradient(900px 520px at 18% 14%, rgba(255,255,255,.92), rgba(255,255,255,0) 62%),
+        radial-gradient(760px 520px at 78% 18%, rgba(255,255,255,.86), rgba(255,255,255,0) 64%),
+        radial-gradient(740px 520px at 40% 42%, rgba(255,255,255,.75), rgba(255,255,255,0) 62%),
+        radial-gradient(860px 560px at 70% 55%, rgba(255,255,255,.66), rgba(255,255,255,0) 64%),
+        radial-gradient(920px 620px at 30% 80%, rgba(255,255,255,.72), rgba(255,255,255,0) 68%),
+        radial-gradient(980px 700px at 82% 84%, rgba(255,255,255,.60), rgba(255,255,255,0) 70%);
+      filter: blur(2px);
+      transform: translate3d(0,0,0);
+      opacity:.92;
+    }
+
+    /* subtle "grain imitation" using repeating radial trick (no harsh noise) */
+    .sky::after{
+      content:"";
+      position:absolute;
+      inset:0;
+      background:
+        radial-gradient(circle at 20% 30%, rgba(109,94,252,.08), transparent 42%),
+        radial-gradient(circle at 82% 22%, rgba(167,139,250,.10), transparent 46%),
+        radial-gradient(circle at 55% 78%, rgba(109,94,252,.06), transparent 48%),
+        repeating-radial-gradient(circle at 50% 50%,
+          rgba(11,18,32,.010) 0 1px,
+          rgba(255,255,255,0) 1px 6px
+        );
+      mix-blend-mode: multiply;
+      opacity:.65;
+      pointer-events:none;
+    }
+
+    /* floating layers animated via JS (very light) */
+    .cloudLayer{
+      position:absolute;
+      inset:-30vh -25vw;
+      pointer-events:none;
+      opacity:.55;
+      filter: blur(1px);
+      transform: translate3d(0,0,0);
+      will-change: transform;
+    }
+    .cloudLayer.layer1{
+      background:
+        radial-gradient(780px 520px at 22% 18%, rgba(255,255,255,.90), rgba(255,255,255,0) 66%),
+        radial-gradient(980px 650px at 78% 42%, rgba(255,255,255,.72), rgba(255,255,255,0) 70%),
+        radial-gradient(840px 560px at 42% 74%, rgba(255,255,255,.68), rgba(255,255,255,0) 70%);
+    }
+    .cloudLayer.layer2{
+      opacity:.38;
+      filter: blur(2px);
+      background:
+        radial-gradient(760px 520px at 70% 16%, rgba(255,255,255,.72), rgba(255,255,255,0) 70%),
+        radial-gradient(960px 700px at 30% 56%, rgba(255,255,255,.62), rgba(255,255,255,0) 72%),
+        radial-gradient(820px 560px at 62% 88%, rgba(255,255,255,.58), rgba(255,255,255,0) 74%);
+    }
+
+    .skyAura{
+      position:absolute;
+      inset:-40vh -30vw;
+      pointer-events:none;
+      mix-blend-mode: screen;
+      opacity:.28;
+      filter: blur(26px) saturate(108%);
+      will-change: transform;
+      animation: auraShift 22s linear infinite alternate;
+    }
+    .skyAura.a1{
+      background:
+        radial-gradient(700px 480px at 12% 18%, rgba(255,108,166,.20), transparent 72%),
+        radial-gradient(740px 520px at 82% 20%, rgba(126,167,255,.22), transparent 74%),
+        radial-gradient(800px 560px at 34% 74%, rgba(159,124,255,.22), transparent 74%);
+      animation-duration: 25s;
+    }
+    .skyAura.a2{
+      opacity:.24;
+      background:
+        radial-gradient(760px 520px at 78% 36%, rgba(150,255,235,.16), transparent 72%),
+        radial-gradient(700px 500px at 20% 82%, rgba(255,214,133,.18), transparent 74%),
+        radial-gradient(680px 480px at 54% 42%, rgba(162,182,255,.14), transparent 72%);
+      animation-duration: 32s;
+      animation-direction: alternate-reverse;
+    }
+
+    @keyframes auraShift{
+      0%{ transform: translate3d(-1.2%, -1%, 0) scale(1); }
+      50%{ transform: translate3d(1.6%, -0.4%, 0) scale(1.04); }
+      100%{ transform: translate3d(-0.8%, 1.4%, 0) scale(1.02); }
+    }
+
+    @keyframes rainbowPulse{
+      0%{ transform: translate3d(-1.8%, -1.2%, 0) scale(1); }
+      50%{ transform: translate3d(2.1%, 1.4%, 0) scale(1.06); }
+      100%{ transform: translate3d(-1.1%, 2%, 0) scale(1.03); }
+    }
+
+    @keyframes chaosFloat{
+      0%{ transform: translate3d(0,0,0) rotate(0deg); }
+      50%{ transform: translate3d(-16px, 22px, 0) rotate(1.8deg); }
+      100%{ transform: translate3d(18px, -14px, 0) rotate(-1.2deg); }
+    }
+
+    /* =========================================================
+       LAYOUT UTILITIES
+       ========================================================= */
+
+    .wrap{
+      width: min(var(--max), 100%);
+      margin: 0 auto;
+      padding: 0 16px;
+    }
+
+    .section{
+      position:relative;
+      padding: 56px 0;
+    }
+    @media (max-width: 520px){
+      .section{ padding: 46px 0; }
+    }
+
+    .divider{
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(11,18,32,.10), transparent);
+      margin: 18px 0 0;
+    }
+
+    /* reveal animation */
+    .reveal{
+      opacity:0;
+      transform: translate3d(0,12px,0);
+      transition: opacity .7s var(--ease), transform .7s var(--ease);
+    }
+    .reveal.in{
+      opacity:1;
+      transform: translate3d(0,0,0);
+    }
+
+    @media (prefers-reduced-motion: reduce){
+      .reveal{ opacity:1; transform:none; transition:none; }
+      .sky::before,.sky::after{ animation:none !important; }
+      .cloudLayer{ display:none; }
+      .skyAura{ display:none; }
+      .rainbowLayer{ display:none; }
+      .chaosField{ display:none; }
+      *{ scroll-behavior:auto !important; }
+    }
+
+    /* =========================================================
+       HEADER — floating "brow" object, not stuck to edges
+       ========================================================= */
+
+    .topBrow{
+      position: sticky;
+      top: 10px;
+      z-index: 300;
+      padding: 10px 16px 0;
+    }
+
+    .brow{
+      width: 100%;
+      max-width: var(--max);
+      margin: 0 auto;
+      background: rgba(255,255,255,.86);
+      border: 1px solid rgba(11,18,32,.10);
+      border-radius: 999px;
+      box-shadow: 0 14px 50px rgba(2,6,23,.10);
+      backdrop-filter: blur(10px);
+      padding: 10px 12px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+    }
+
+    .brand{
+      display:flex;
+      align-items:baseline;
+      gap:10px;
+      padding-left: 8px;
+      min-width: 120px;
+    }
+    .logo{
+      font-weight: 900;
+      letter-spacing: .2px;
+      font-size: 14px;
+      padding: 8px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.68);
+    }
+    .tagline{
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      white-space:nowrap;
+    }
+
+    .nav{
+      display:flex;
+      align-items:center;
+      gap:10px;
+      flex: 1;
+      justify-content:center;
+      min-width: 0;
+    }
+    .nav a{
+      color: rgba(11,18,32,.68);
+      font-weight: 850;
+      font-size: 12px;
+      padding: 10px 12px;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      transition: border-color .2s var(--ease), background .2s var(--ease), color .2s var(--ease);
+      white-space:nowrap;
+    }
+    .nav a:hover{
+      color: rgba(11,18,32,.92);
+      border-color: rgba(109,94,252,.20);
+      background: rgba(109,94,252,.06);
+    }
+
+    .ctaTop{
+      display:flex;
+      align-items:center;
+      gap:10px;
+      position: relative;
+    }
+
+    .menuToggle{
+      width: var(--tap);
+      min-width: var(--tap);
+      padding: 0;
+      border-color: rgba(109,94,252,.28);
+      background: rgba(255,255,255,.88);
+    }
+    .menuIcon{
+      position:relative;
+      width: 18px;
+      height: 14px;
+      display:block;
+    }
+    .menuIcon::before,
+    .menuIcon::after,
+    .menuIcon i{
+      content:"";
+      position:absolute;
+      left:0;
+      width:100%;
+      height:2px;
+      border-radius:99px;
+      background: rgba(11,18,32,.84);
+      transition: transform .22s var(--ease), opacity .22s var(--ease), top .22s var(--ease);
+    }
+    .menuIcon::before{ top:0; }
+    .menuIcon i{ top:6px; }
+    .menuIcon::after{ top:12px; }
+
+    .menuToggle[aria-expanded="true"] .menuIcon::before{
+      top:6px;
+      transform: rotate(45deg);
+    }
+    .menuToggle[aria-expanded="true"] .menuIcon i{
+      opacity:0;
+    }
+    .menuToggle[aria-expanded="true"] .menuIcon::after{
+      top:6px;
+      transform: rotate(-45deg);
+    }
+
+    .menuPanel{
+      position: fixed;
+      top: calc(64px + env(safe-area-inset-top, 0px));
+      right: 0;
+      width: min(320px, calc(100vw - 32px));
+      margin-right: 16px;
+      max-height: calc(100svh - 90px);
+      overflow: auto;
+      border-radius: 22px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.95);
+      box-shadow: 0 24px 80px rgba(2,6,23,.14);
+      backdrop-filter: blur(10px);
+      padding: 12px;
+      transform: translate3d(0,-8px,0);
+      opacity: 0;
+      pointer-events:none;
+      transition: transform .24s var(--ease), opacity .24s var(--ease);
+      z-index: 1200;
+    }
+    .menuPanel.open{
+      opacity:1;
+      transform: translate3d(0,0,0);
+      pointer-events:auto;
+    }
+    .menuPanel a{
+      display:block;
+      padding: 12px 14px;
+      border-radius: 14px;
+      color: rgba(11,18,32,.78);
+      font-weight: 850;
+      font-size: 14px;
+      border: 1px solid transparent;
+      transition: background .2s var(--ease), border-color .2s var(--ease);
+    }
+
+    .menuPanel a:hover{
+      border-color: rgba(109,94,252,.22);
+      background: rgba(109,94,252,.07);
+    }
+
+    .btn{
+      height: var(--tap);
+      border-radius: 999px;
+      border: 1px solid rgba(11,18,32,.12);
+      background: rgba(255,255,255,.78);
+      color: var(--ink);
+      font-weight: 950;
+      font-size: 13px;
+      padding: 0 14px;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      gap:10px;
+      cursor:pointer;
+      user-select:none;
+      transition: transform .12s var(--ease), box-shadow .25s var(--ease), background .25s var(--ease);
+      box-shadow: 0 12px 40px rgba(2,6,23,.08);
+    }
+    .btn:active{ transform: scale(.985); }
+
+    .btnPrimary{
+      border-color: rgba(109,94,252,.26);
+      background: linear-gradient(135deg, rgba(109,94,252,.92), rgba(167,139,250,.88));
+      color: #fff;
+      box-shadow: 0 18px 60px rgba(109,94,252,.20);
+    }
+    .btnPrimary:hover{
+      box-shadow: 0 22px 75px rgba(109,94,252,.26);
+    }
+
+    @media (min-width: 861px) and (hover: hover){
+      .btn,
+      .payBtn{
+        transition: transform .24s var(--ease2), box-shadow .32s var(--ease2), filter .32s var(--ease2), background-position .36s var(--ease2);
+        will-change: transform;
+      }
+      .btn:hover,
+      .payBtn:hover{
+        transform: translateY(-2px) scale(1.015);
+        filter: saturate(1.05);
+      }
+      .btnPrimary:hover,
+      .payBtn:hover{
+        box-shadow: 0 26px 82px rgba(109,94,252,.30);
+      }
+      .btnGhost:hover,
+      .menuToggle:hover{
+        box-shadow: 0 16px 48px rgba(109,94,252,.18);
+        border-color: rgba(109,94,252,.32);
+      }
+    }
+
+  
+
+    @media (max-width: 860px){
+      .tagline{ display:none; }
+    }
+
+    /* =========================================================
+       HERO — asymmetric, not "centered container"
+       ========================================================= */
+
+    .hero{
+      position: relative;
+      padding: 34px 0 16px;
+      overflow: hidden;
+    }
+
+    .hero::after{
+      content:"";
+      position:absolute;
+      left:0;
+      right:0;
+      bottom:-1px;
+      height: clamp(84px, 14vw, 150px);
+      background: linear-gradient(
+        180deg,
+        rgba(223,234,250,0) 0%,
+        rgba(232,241,252,.64) 44%,
+        rgba(243,248,255,.90) 72%,
+        rgba(251,253,255,.98) 100%
+      );
+      pointer-events:none;
+      z-index: 1;
+    }
+
+    #why{
+      padding-top: clamp(62px, 8vw, 96px);
+    }
+    #why::before{
+      content:"";
+      position:absolute;
+      left:0;
+      right:0;
+      top:0;
+      height: clamp(84px, 12vw, 140px);
+      background: linear-gradient(180deg, rgba(251,253,255,.98) 0%, rgba(251,253,255,0) 100%);
+      pointer-events:none;
+    }
+
+    .heroAmbient{
+      position:absolute;
+      inset: -70px -7vw auto;
+      height: min(580px, 72vh);
+      pointer-events:none;
+      z-index: -1;
+    }
+    .heroAmbient i{
+      position:absolute;
+      border-radius: 999px;
+      filter: blur(34px);
+      opacity:.28;
+      transform: translate3d(0,0,0);
+      background: radial-gradient(circle, var(--tone, rgba(109,94,252,.24)) 0%, rgba(109,94,252,0) 72%);
+    }
+    .heroAmbient i:nth-child(1){ width: 340px; height: 340px; left: 7%; top: 18px; --tone: rgba(109,94,252,.30); }
+    .heroAmbient i:nth-child(2){ width: 280px; height: 280px; right: 8%; top: 58px; --tone: rgba(167,139,250,.28); }
+    .heroAmbient i:nth-child(3){ width: 220px; height: 220px; left: 28%; top: 220px; --tone: rgba(124,110,255,.22); }
+    .heroAmbient i:nth-child(4){ width: 200px; height: 200px; right: 24%; top: 238px; --tone: rgba(149,124,255,.20); }
+    .heroAmbient i:nth-child(5){ width: 170px; height: 170px; left: 2%; top: 250px; --tone: rgba(109,94,252,.16); }
+    .heroAmbient i:nth-child(6){ width: 150px; height: 150px; right: 1%; top: 282px; --tone: rgba(182,155,255,.18); }
+
+
+    .heroGrid{
+      display:grid;
+      grid-template-columns: 1fr;
+      gap: 22px;
+      align-items: stretch;
+    }
+
+   
+
+    .heroLeft{
+      position:relative;
+      padding: 18px 0 0;
+      width: min(100%, 680px);
+      max-width: 680px;
+      margin-inline: auto;
+      text-align: center;
+      padding-inline: clamp(4px, 1.8vw, 10px);
+    }
+    .heroLeft::before{
+      content:"";
+      position:absolute;
+      left:50%;
+      top: 12px;
+      width: min(62vw, 560px);
+      aspect-ratio: 1/1;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(109,94,252,.26) 0%, rgba(109,94,252,.14) 38%, rgba(109,94,252,0) 72%);
+      filter: blur(30px);
+      transform: translateX(-50%);
+      pointer-events:none;
+      z-index:-1;
+    }
+
+    @media (min-width: 861px){
+      #why .bigType,
+      #why .lead{
+        text-align:center;
+        margin-inline:auto;
+      }
+      #why .bigType{
+        max-width: 24ch;
+      }
+      #why .lead{
+        max-width: 76ch;
+      }
+    }
+
+    .headline{
+      font-size: clamp(36px, 5.8vw, 68px);
+      line-height: 1.08;
+      letter-spacing: -1.2px;
+      margin: 0;
+      font-weight: 980;
+      text-wrap: balance;
+      max-width: 14ch;
+      margin-inline: auto;
+      padding-bottom: .08em;
+    }
+
+    .headline .accentWord{
+      font-family: var(--font-accent);
+      font-weight: 800;
+      letter-spacing: -0.8px;
+      font-style: italic;
+      font-size: clamp(72px, 14vw, 160px);
+      line-height: 1;
+      display:inline-block;
+      vertical-align: middle;
+      padding-inline: .05em;
+      margin-inline: -.05em;
+      text-shadow: 0 14px 44px rgba(109,94,252,.22);
+    }
+
+    .headlineItalic{
+      font-family: var(--font-accent);
+      font-weight: 800;
+      font-style: italic;
+      letter-spacing: -0.8px;
+      color: inherit;
+    }
+
+    .shine{
+      background: var(--gradA);
+      background-size: 200% 100%;
+      -webkit-background-clip:text;
+      background-clip:text;
+      color: transparent;
+      animation: gradShift 6.8s var(--ease2) infinite;
+      text-shadow: 0 12px 36px rgba(109,94,252,.10);
+    }
+    @keyframes gradShift{
+      0%{ background-position: 0% 50%; }
+      50%{ background-position: 100% 50%; }
+      100%{ background-position: 0% 50%; }
+    }
+
+    .sub{
+      margin: 16px 0 0;
+      max-width: 58ch;
+      margin-inline:auto;
+      font-size: clamp(16px, 2vw, 18px);
+      line-height: 1.58;
+      color: rgba(11,18,32,.72);
+      font-weight: 650;
+      text-wrap: pretty;
+      overflow-wrap: anywhere;
+    }
+
+    .heroMeta{
+      margin-top: 18px;
+      display:flex;
+      flex-wrap:wrap;
+      gap:10px;
+      align-items:center;
+      justify-content:center;
+    }
+
+    .priceBlock{
+      display:flex;
+      align-items:baseline;
+      gap:10px;
+      padding: 10px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.70);
+      box-shadow: 0 14px 55px rgba(2,6,23,.08);
+    }
+    .old{
+      color: rgba(11,18,32,.45);
+      text-decoration: line-through;
+      font-weight: 900;
+      font-size: 13px;
+    }
+    .new{
+      font-weight: 980;
+      font-size: 15px;
+      color: rgba(11,18,32,.92);
+    }
+    .new .shine{
+      animation-duration: 7.4s;
+    }
+
+    .heroBtns{
+      display:flex;
+      gap:10px;
+      flex-wrap:wrap;
+      justify-content:center;
+    }
+    .btnGhost{
+      background: rgba(255,255,255,.72);
+    }
+
+    /* human-like micro badges */
+    .trustRow{
+      margin-top: 18px;
+      display:flex;
+      flex-wrap:wrap;
+      gap:10px;
+      align-items:center;
+      justify-content:center;
+      color: rgba(11,18,32,.60);
+      font-size: 12px;
+      font-weight: 750;
+    }
+    .trust{
+      display:inline-flex;
+      gap:10px;
+      align-items:center;
+      padding: 10px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.65);
+    }
+    .dot{
+      width: 8px; height: 8px; border-radius: 999px;
+      background: rgba(109,94,252,.55);
+      box-shadow: 0 0 0 6px rgba(109,94,252,.10);
+    }
+
+    /* HERO RIGHT — "floating instrument" preview (not screenshot) */
+    .heroRight{
+      position:relative;
+      min-height: 320px;
+      border-radius: var(--radius-xl);
+      border: 1px solid rgba(11,18,32,.10);
+      background:
+        radial-gradient(720px 520px at 50% 20%, rgba(255,255,255,.92), rgba(255,255,255,0) 62%),
+        radial-gradient(520px 420px at 80% 55%, rgba(167,139,250,.18), rgba(255,255,255,0) 72%),
+        radial-gradient(520px 420px at 20% 72%, rgba(109,94,252,.14), rgba(255,255,255,0) 70%),
+        rgba(255,255,255,.62);
+      box-shadow: var(--shadow);
+      overflow:hidden;
+    }
+
+    .heroInlineVideo{
+      margin: 16px auto 0;
+      width: min(100%, 560px);
+    }
+
+    .heroRight::before{
+      content:"";
+      position:absolute;
+      inset:-40px;
+      background:
+        radial-gradient(closest-side at 55% 35%, rgba(109,94,252,.18), transparent 62%),
+        radial-gradient(closest-side at 42% 58%, rgba(167,139,250,.14), transparent 64%);
+      filter: blur(18px);
+      opacity:.65;
+      pointer-events:none;
+    }
+
+    .heroVideoWrap{
+      position:absolute;
+      inset: 14px;
+      border-radius: 24px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.78);
+      box-shadow: 0 18px 70px rgba(2,6,23,.10);
+      overflow:hidden;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+    }
+
+    .heroVideo{
+      width:100%;
+      height:100%;
+      object-fit: cover;
+      object-position: center;
+      border-radius: inherit;
+      background: rgba(255,255,255,.45);
+      pointer-events: none;
+      user-select:none;
+      }
+
+    .instTop{
+      height: 52px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      padding: 0 14px;
+      border-bottom: 1px solid rgba(11,18,32,.08);
+      background: rgba(255,255,255,.84);
+    }
+    .instTitle{
+      font-weight: 950;
+      font-size: 13px;
+      letter-spacing:.2px;
+    }
+    .instChip{
+      font-size: 12px;
+      font-weight: 900;
+      color: rgba(11,18,32,.64);
+      padding: 8px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.72);
+    }
+
+    .instBody{
+      padding: 14px;
+      display:grid;
+      grid-template-columns: 1fr;
+      gap:12px;
+    }
+
+    .orbWrap{
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      padding: 12px;
+    }
+    .orb{
+      width: min(240px, 68vw);
+      aspect-ratio: 1 / 1;
+      border-radius: 999px;
+      border: 1px solid rgba(11,18,32,.10);
+      background:
+        radial-gradient(circle at 40% 35%, rgba(167,139,250,.42), rgba(255,255,255,0) 55%),
+        radial-gradient(circle at 70% 70%, rgba(109,94,252,.24), rgba(255,255,255,0) 60%),
+        radial-gradient(circle at 50% 50%, rgba(255,255,255,.84), rgba(255,255,255,.46) 58%, rgba(255,255,255,0) 72%);
+      box-shadow: 0 20px 80px rgba(109,94,252,.12);
+      position:relative;
+      overflow:hidden;
+    }
+    .orb::before{
+      content:"";
+      position:absolute;
+      inset:-30%;
+      background:
+        radial-gradient(circle at 30% 30%, rgba(255,255,255,.72), transparent 55%),
+        radial-gradient(circle at 70% 70%, rgba(255,255,255,.48), transparent 60%);
+      opacity:.8;
+      filter: blur(4px);
+      transform: translate3d(var(--orbX,0), var(--orbY,0), 0);
+      will-change: transform;
+    }
+
+    .instTiles{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap:10px;
+    }
+
+    .tile{
+      border: 1px solid rgba(11,18,32,.10);
+      border-radius: 18px;
+      background: rgba(255,255,255,.70);
+      padding: 12px 12px;
+      min-height: 66px;
+      display:flex;
+      flex-direction:column;
+      justify-content:center;
+      box-shadow: 0 14px 45px rgba(2,6,23,.06);
+    }
+    .tile b{ font-size: 12px; }
+    .tile span{ margin-top:6px; color: rgba(11,18,32,.62); font-size: 12px; font-weight: 700; }
+
+    .instTiles .tile:nth-child(3){
+      grid-column: 1 / -1;
+      border-radius: 22px;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.82), rgba(255,255,255,.60));
+      position:relative;
+      overflow:hidden;
+    }
+    .instTiles .tile:nth-child(3)::after{
+      content:"";
+      position:absolute;
+      inset:-40px -20px;
+      background: radial-gradient(closest-side at 75% 40%, rgba(109,94,252,.20), transparent 62%);
+      filter: blur(18px);
+      opacity:.8;
+    }
+
+    @media (max-width: 860px){
+      .heroRight{ min-height: 380px; }
+      .heroInlineVideo{ margin-top: 14px; }
+      .heroVideoWrap{ inset: 12px; }
+      .hero{
+        padding-top: 26px;
+      }
+      .heroLeft{
+        max-width: 100%;
+        padding-top: 8px;
+      }
+      .heroLeft::before{
+        width: min(88vw, 620px);
+        top: -10px;
+      }
+      .headline .accentWord{
+        font-size: clamp(86px, 24vw, 170px);
+      }
+    }
+
+    @media (max-width: 520px){
+      .hero{
+        padding: 22px 0 10px;
+      }
+      .heroGrid{
+        gap: 16px;
+      }
+      .heroLeft{
+        min-height: calc(100svh - 130px);
+        display:flex;
+        flex-direction:column;
+        justify-content:center;
+        max-width: 100%;
+        padding-inline: 0;
+      }
+      .headline{
+        font-size: clamp(22px, 7.6vw, 30px);
+        max-width: 12ch;
+        letter-spacing: -0.35px;
+        overflow-wrap: normal;
+        word-break: normal;
+        hyphens: none;
+      }
+      .headline .accentWord{
+        font-size: clamp(42px, 14vw, 66px);
+        line-height: 1;
+      }
+      .sub{
+        max-width: 24ch;
+      }
+      .heroMeta{
+        flex-direction:column;
+      }
+      .priceBlock{
+        margin-inline:auto;
+      }
+      .heroBtns{
+        width:100%;
+        justify-content:center;
+      }
+      .heroBtns .btn{
+        flex: 1 1 46%;
+      }
+      .heroInlineVideo{
+        min-height: 300px;
+      }
+    }
+
+    /* =========================================================
+       SECTION TITLES — not always same pattern
+       ========================================================= */
+
+    .kicker{
+      display:inline-flex;
+      align-items:center;
+      gap:10px;
+      padding: 10px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.70);
+      color: rgba(11,18,32,.70);
+      font-weight: 900;
+      font-size: 12px;
+      box-shadow: 0 14px 50px rgba(2,6,23,.06);
+    }
+    .kdot{
+      width: 8px; height: 8px; border-radius:999px;
+      background: rgba(109,94,252,.58);
+      box-shadow: 0 0 0 6px rgba(109,94,252,.10);
+    }
+
+    .bigType{
+      margin: 18px 0 0;
+      font-size: clamp(26px, 4.5vw, 44px);
+      line-height: 1.05;
+      letter-spacing: -0.8px;
+      font-weight: 980;
+    }
+    .bigType em{
+      font-family: var(--font-accent);
+      font-style: italic;
+      font-weight: 700;
+    }
+
+    .lead{
+      margin: 14px 0 0;
+      color: rgba(11,18,32,.68);
+      font-size: 15px;
+      line-height: 1.55;
+      font-weight: 650;
+      max-width: 72ch;
+    }
+
+    /* =========================================================
+       WHY IT WORKS — uneven grid, not uniform cards
+       ========================================================= */
+
+    .whyGrid{
+      margin-top: 18px;
+      display:grid;
+      grid-template-columns: 1.1fr .9fr;
+      gap: 14px;
+      align-items:stretch;
+    }
+    @media (max-width: 920px){
+      .whyGrid{ grid-template-columns: 1fr; }
+    }
+
+    .whyLeft{
+      border-radius: 30px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.72);
+      box-shadow: 0 22px 84px rgba(2,6,23,.10);
+      overflow:hidden;
+      position:relative;
+    }
+    .whyLeft::before{
+      content:"";
+      position:absolute;
+      inset:-50px;
+      background:
+        radial-gradient(closest-side at 20% 30%, rgba(167,139,250,.18), transparent 62%),
+        radial-gradient(closest-side at 70% 60%, rgba(109,94,252,.16), transparent 64%);
+      filter: blur(20px);
+      opacity:.75;
+      pointer-events:none;
+    }
+
+    .whyLeftInner{
+      position:relative;
+      padding: 16px;
+      display:grid;
+      gap: 10px;
+    }
+
+    .whyNote{
+      border: 1px solid rgba(11,18,32,.10);
+      border-radius: 20px;
+      background: rgba(255,255,255,.78);
+      padding: 14px;
+      box-shadow: 0 14px 44px rgba(2,6,23,.07);
+    }
+    .whyNote strong{
+      display:flex;
+      align-items:center;
+      gap:10px;
+      font-size: 14px;
+      letter-spacing:.1px;
+    }
+    .whyNote p{
+      margin: 10px 0 0;
+      color: rgba(11,18,32,.65);
+      font-size: 13px;
+      line-height: 1.5;
+      font-weight: 650;
+    }
+
+    .whyRight{
+      display:grid;
+      grid-template-columns: 1fr;
+      gap: 14px;
+    }
+    .whyStat{
+      border-radius: 30px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.72);
+      box-shadow: 0 22px 84px rgba(2,6,23,.10);
+      padding: 16px;
+      overflow:hidden;
+      position:relative;
+    }
+    .whyStat::after{
+      content:"";
+      position:absolute;
+      inset:-50px -10px;
+      background: radial-gradient(closest-side at 60% 40%, rgba(109,94,252,.22), transparent 60%);
+      filter: blur(20px);
+      opacity:.65;
+      pointer-events:none;
+    }
+
+    .whyStat .row{
+      position:relative;
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:10px;
+    }
+    .whyStat .row b{ font-size: 13px; }
+    .whyStat .row span{ color: rgba(11,18,32,.58); font-size: 12px; font-weight: 750; }
+    .meter{
+      margin-top: 12px;
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(11,18,32,.08);
+      overflow:hidden;
+      position:relative;
+    }
+    .meter > i{
+      display:block;
+      height:100%;
+      width: var(--w, 55%);
+      background: linear-gradient(90deg, rgba(109,94,252,.76), rgba(167,139,250,.64));
+      border-radius: 999px;
+      box-shadow: 0 14px 50px rgba(109,94,252,.16);
+    }
+
+    /* =========================================================
+       WHAT INSIDE — mixed layout: copy + horizontal scroller (mobile)
+       ========================================================= */
+
+    .inside{
+      margin-top: 18px;
+      display:grid;
+      grid-template-columns: .95fr 1.05fr;
+      gap: 16px;
+      align-items:start;
+    }
+    @media (max-width: 980px){
+      .inside{ grid-template-columns: 1fr; }
+    }
+
+    .insideCopy{
+      padding-top: 6px;
+    }
+
+    .featureList{
+      margin-top: 16px;
+      display:grid;
+      gap: 10px;
+    }
+
+    .fItem{
+      display:flex;
+      gap:12px;
+      align-items:flex-start;
+      padding: 12px 12px;
+      border-radius: 22px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.72);
+      box-shadow: 0 14px 50px rgba(2,6,23,.06);
+    }
+    .fIcon{
+      width: 42px; height: 42px;
+      border-radius: 16px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.74);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      font-size: 18px;
+      flex: 0 0 42px;
+    }
+    .fText b{ display:block; font-size: 13px; }
+    .fText span{ display:block; margin-top:6px; color: rgba(11,18,32,.64); font-size: 12.5px; font-weight: 650; line-height: 1.45; }
+
+    .mockWrap{
+      border-radius: var(--radius-xl);
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.70);
+      box-shadow: var(--shadow);
+      overflow:hidden;
+      position:relative;
+      min-height: 380px;
+    }
+    .mockWrap::before{
+      content:"";
+      position:absolute;
+      inset:-60px;
+      background:
+        radial-gradient(closest-side at 60% 30%, rgba(109,94,252,.18), transparent 60%),
+        radial-gradient(closest-side at 30% 70%, rgba(167,139,250,.14), transparent 62%);
+      filter: blur(24px);
+      opacity:.75;
+      pointer-events:none;
+    }
+
+    .mock{
+      position:absolute;
+      inset: 14px;
+      border-radius: 26px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.82);
+      box-shadow: 0 18px 70px rgba(2,6,23,.10);
+      overflow:hidden;
+    }
+
+    .mockHeader{
+      height: 56px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      padding: 0 14px;
+      border-bottom: 1px solid rgba(11,18,32,.08);
+    }
+    .mockHeader .left{
+      display:flex;
+      align-items:center;
+      gap:10px;
+      min-width: 0;
+    }
+    .mockHeader .bubble{
+      width: 34px; height: 34px;
+      border-radius: 14px;
+      border: 1px solid rgba(11,18,32,.10);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      background: rgba(255,255,255,.70);
+    }
+    .mockHeader .title{
+      font-weight: 950;
+      font-size: 13px;
+      letter-spacing:.2px;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      max-width: 240px;
+    }
+    .mockHeader .right{
+      display:flex;
+      gap:8px;
+      align-items:center;
+    }
+    .miniPill{
+      padding: 8px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.70);
+      font-size: 12px;
+      font-weight: 900;
+      color: rgba(11,18,32,.62);
+      white-space:nowrap;
+    }
+
+    .mockBody{
+      padding: 14px;
+      display:grid;
+      gap: 12px;
+    }
+
+    .mockRow{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    @media (max-width: 520px){
+      .mockRow{ grid-template-columns: 1fr; }
+    }
+
+    .mockCard{
+      border-radius: 22px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.72);
+      padding: 12px;
+      box-shadow: 0 14px 45px rgba(2,6,23,.06);
+      min-height: 96px;
+      position:relative;
+      overflow:hidden;
+    }
+    .mockCard::after{
+      content:"";
+      position:absolute;
+      inset:-50px;
+      background: radial-gradient(closest-side at 70% 40%, rgba(109,94,252,.16), transparent 62%);
+      filter: blur(20px);
+      opacity:.7;
+      pointer-events:none;
+    }
+    .mockCard b{ position:relative; display:flex; align-items:center; gap:10px; font-size: 13px; }
+    .mockCard span{ position:relative; display:block; margin-top:8px; color: rgba(11,18,32,.62); font-size: 12.5px; font-weight: 650; line-height: 1.45; }
+
+    .mockLong{
+      border-radius: 26px;
+      border: 1px solid rgba(11,18,32,.10);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.82), rgba(255,255,255,.66));
+      padding: 14px;
+      box-shadow: 0 18px 70px rgba(2,6,23,.08);
+      position:relative;
+      overflow:hidden;
+    }
+    .mockLong::before{
+      content:"";
+      position:absolute;
+      inset:-70px -30px;
+      background:
+        radial-gradient(closest-side at 30% 45%, rgba(167,139,250,.18), transparent 62%),
+        radial-gradient(closest-side at 78% 55%, rgba(109,94,252,.14), transparent 64%);
+      filter: blur(22px);
+      opacity:.8;
+      pointer-events:none;
+    }
+    .mockLong .line1{
+      position:relative;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+    }
+    .mockLong .line1 b{ font-size: 13px; }
+    .mockLong .line2{
+      position:relative;
+      margin-top: 10px;
+      color: rgba(11,18,32,.66);
+      font-size: 12.5px;
+      font-weight: 650;
+      line-height: 1.55;
+    }
+
+    /* horizontal scroll micro section (mobile) */
+    .hScroll{
+      margin-top: 16px;
+      display:flex;
+      gap: 12px;
+      overflow:auto;
+      padding: 6px 2px 6px;
+      scroll-snap-type: x mandatory;
+      -webkit-overflow-scrolling: touch;
+    }
+    .hScroll::-webkit-scrollbar{ display:none; }
+    .hCard{
+      flex: 0 0 min(320px, 86vw);
+      scroll-snap-align: start;
+      border-radius: var(--radius-xl);
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.74);
+      box-shadow: 0 18px 70px rgba(2,6,23,.08);
+      padding: 14px;
+      position:relative;
+      overflow:hidden;
+    }
+    .hCard::after{
+      content:"";
+      position:absolute;
+      inset:-60px;
+      background: radial-gradient(closest-side at 65% 35%, rgba(109,94,252,.16), transparent 62%);
+      filter: blur(20px);
+      opacity:.75;
+      pointer-events:none;
+    }
+    .hCard b{ position:relative; display:flex; align-items:center; gap:10px; font-size: 13px; }
+    .hCard p{ position:relative; margin: 10px 0 0; color: rgba(11,18,32,.64); font-size: 12.5px; font-weight: 650; line-height: 1.5; }
+
+    /* =========================================================
+       WHO IT'S FOR — typographic “before/after” chips
+       ========================================================= */
+
+    .forGrid{
+      margin-top: 18px;
+      display:grid;
+      grid-template-columns: 1.05fr .95fr;
+      gap: 16px;
+      align-items:start;
+    }
+    @media (max-width: 980px){
+      .forGrid{ grid-template-columns: 1fr; }
+    }
+
+    @media (min-width: 981px){
+      .whyGrid,
+      .forGrid{
+        grid-template-columns: 1fr;
+        justify-items: center;
+      }
+
+      .whyLeft,
+      .forLeft{
+        width: min(900px, 100%);
+      }
+    }
+
+    .forLeft{
+      border-radius: var(--radius-xl);
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.70);
+      box-shadow: var(--shadow);
+      padding: 16px;
+      position:relative;
+      overflow:hidden;
+    }
+    .forLeft::before{
+      content:"";
+      position:absolute;
+      inset:-60px;
+      background:
+        radial-gradient(closest-side at 70% 30%, rgba(167,139,250,.16), transparent 62%),
+        radial-gradient(closest-side at 30% 80%, rgba(109,94,252,.14), transparent 64%);
+      filter: blur(22px);
+      opacity:.8;
+      pointer-events:none;
+    }
+
+    .bullets{
+      position:relative;
+      display:grid;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .bullet{
+      display:flex;
+      gap:12px;
+      align-items:flex-start;
+      padding: 12px 12px;
+      border-radius: 22px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.74);
+      box-shadow: 0 12px 40px rgba(2,6,23,.06);
+    }
+    .bullet i{
+      width: 36px; height: 36px;
+      border-radius: 14px;
+      border: 1px solid rgba(11,18,32,.10);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      background: rgba(255,255,255,.70);
+      font-style: normal;
+      font-size: 16px;
+      flex: 0 0 36px;
+    }
+    .bullet b{ display:block; font-size: 13px; }
+    .bullet span{
+      display:block;
+      margin-top: 6px;
+      color: rgba(11,18,32,.64);
+      font-size: 12.5px;
+      font-weight: 650;
+      line-height: 1.45;
+    }
+
+    .forRight{
+      display:grid;
+      gap: 12px;
+    }
+
+    .beforeAfter{
+      border-radius: 30px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.72);
+      box-shadow: 0 22px 84px rgba(2,6,23,.10);
+      padding: 16px;
+      position:relative;
+      overflow:hidden;
+    }
+    .beforeAfter::after{
+      content:"";
+      position:absolute;
+      inset:-60px -20px;
+      background: radial-gradient(closest-side at 60% 40%, rgba(109,94,252,.18), transparent 62%);
+      filter: blur(22px);
+      opacity:.75;
+      pointer-events:none;
+    }
+
+    .baRow{
+      position:relative;
+      display:grid;
+      gap: 10px;
+    }
+
+    .chipText{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      padding: 12px 12px;
+      border-radius: 22px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.76);
+    }
+    .chipText b{
+      font-size: 12px;
+      color: rgba(11,18,32,.62);
+      font-weight: 950;
+      letter-spacing: .2px;
+      white-space:nowrap;
+    }
+    .chipText span{
+      font-size: 12.5px;
+      color: rgba(11,18,32,.78);
+      font-weight: 700;
+      line-height: 1.35;
+      text-align:right;
+    }
+
+    /* =========================================================
+       BUY — strongest visual, not "just a form"
+       ========================================================= */
+
+    .buyStage{
+      border-radius: 30px;
+      border: 1px solid rgba(109,94,252,.36);
+      background:
+        radial-gradient(860px 540px at 18% 20%, rgba(255,255,255,.92), rgba(255,255,255,0) 60%),
+        radial-gradient(760px 580px at 88% 44%, rgba(109,94,252,.28), rgba(255,255,255,0) 74%),
+        radial-gradient(760px 560px at 18% 86%, rgba(255,120,210,.18), rgba(255,255,255,0) 72%),
+        linear-gradient(135deg, rgba(255,255,255,.83), rgba(242,236,255,.88) 34%, rgba(232,247,255,.84));
+      box-shadow: 0 34px 130px rgba(109,94,252,.20), 0 8px 32px rgba(2,6,23,.10);
+      overflow:hidden;
+      position:relative;
+    }
+
+    .buyStage::before{
+      content:"";
+      position:absolute;
+      inset:-80px;
+      background:
+        radial-gradient(closest-side at 58% 40%, rgba(109,94,252,.22), transparent 62%),
+        radial-gradient(closest-side at 30% 75%, rgba(167,139,250,.18), transparent 64%);
+      filter: blur(30px);
+      opacity:.75;
+      pointer-events:none;
+      transform: translate3d(0,0,0);
+    }
+
+    .buyStage::after{
+      content:"";
+      position:absolute;
+      inset: 0;
+      border-radius: inherit;
+      padding: 1px;
+      background: linear-gradient(120deg,
+        rgba(255,112,168,.58),
+        rgba(255,186,97,.58),
+        rgba(106,204,255,.58),
+        rgba(162,124,255,.62));
+      -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      pointer-events:none;
+      opacity:.72;
+    }
+
+    .buyInner{
+      position:relative;
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      padding: 18px;
+      align-items:stretch;
+    }
+    @media (max-width: 980px){
+      .buyInner{ grid-template-columns: 1fr; }
+    }
+
+    .buyLeft{
+      border-radius: 26px;
+      border: 1px solid rgba(109,94,252,.26);
+      background: linear-gradient(145deg, rgba(255,255,255,.90), rgba(248,242,255,.84));
+      box-shadow: 0 20px 74px rgba(109,94,252,.16);
+      padding: 16px;
+      overflow:hidden;
+      position:relative;
+    }
+    .buyLeft::after{
+      content:"";
+      position:absolute;
+      inset:-80px -10px;
+      background: radial-gradient(closest-side at 70% 40%, rgba(109,94,252,.20), transparent 62%);
+      filter: blur(26px);
+      opacity:.75;
+      pointer-events:none;
+    }
+
+    .buyRight{
+      border-radius: 26px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.78);
+      box-shadow: 0 18px 70px rgba(2,6,23,.08);
+      padding: 16px;
+      overflow:hidden;
+      position:relative;
+    }
+    .buyRight::after{
+      content:"";
+      position:absolute;
+      inset:-80px -10px;
+      background: radial-gradient(closest-side at 40% 45%, rgba(167,139,250,.20), transparent 62%);
+      filter: blur(26px);
+      opacity:.70;
+      pointer-events:none;
+    }
+
+    .buyTitle{
+      position:relative;
+      margin: 0;
+      font-size: 22px;
+      letter-spacing: -0.4px;
+      font-weight: 980;
+      line-height:1.05;
+    }
+    .buyTitle .shine{
+      background: var(--gradB);
+      background-size: 220% 100%;
+      animation-duration: 8.2s;
+    }
+
+    .buyDesc{
+      position:relative;
+      margin: 10px 0 0;
+      color: rgba(11,18,32,.68);
+      font-size: 13.5px;
+      font-weight: 650;
+      line-height: 1.5;
+      max-width: 60ch;
+    }
+
+    .buyPrice{
+      position:relative;
+      margin-top: 14px;
+      display:flex;
+      flex-wrap:wrap;
+      gap:10px;
+      align-items:center;
+    }
+    .badge{
+      display:inline-flex;
+      align-items:center;
+      gap:10px;
+      padding: 10px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.70);
+      font-weight: 950;
+      font-size: 12px;
+      color: rgba(11,18,32,.70);
+      box-shadow: 0 14px 50px rgba(2,6,23,.06);
+      white-space:nowrap;
+    }
+    .badge strong{
+      font-size: 13px;
+      color: rgba(11,18,32,.92);
+    }
+    .badge .old{ font-size: 12px; }
+
+    .form{
+      position:relative;
+      margin-top: 14px;
+      display:grid;
+      gap: 10px;
+    }
+
+    .field{
+      display:grid;
+      gap: 8px;
+    }
+    .label{
+      font-size: 12px;
+      font-weight: 900;
+      color: rgba(11,18,32,.72);
+      letter-spacing:.15px;
+    }
+
+    .input{
+      height: 46px;
+      border-radius: 18px;
+      border: 1px solid rgba(109,94,252,.36);
+      background: rgba(255,255,255,.86);
+      padding: 0 12px;
+      outline: none;
+      font-size: 14px;
+      font-weight: 700;
+      color: rgba(11,18,32,.88);
+      transition: border-color .2s var(--ease), box-shadow .2s var(--ease);
+      box-shadow: 0 12px 40px rgba(109,94,252,.10);
+    }
+    @media (max-width: 768px){
+      .input{
+        font-size: 16px;
+      }
+    }
+    .input:focus{
+      border-color: rgba(109,94,252,.60);
+      box-shadow: 0 15px 58px rgba(109,94,252,.18);
+    }
+
+    .agree{
+      display:flex;
+      gap:10px;
+      align-items:flex-start;
+      padding: 12px 12px;
+      border-radius: 18px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.70);
+    }
+    .agree input{
+      width: 18px;
+      height: 18px;
+      margin-top: 2px;
+      accent-color: var(--violet);
+      flex: 0 0 18px;
+    }
+    .agree p{
+      margin: 0;
+      color: rgba(11,18,32,.68);
+      font-size: 12.5px;
+      font-weight: 650;
+      line-height: 1.35;
+    }
+    .agree a{
+      text-decoration: underline;
+      text-decoration-color: rgba(109,94,252,.35);
+      text-underline-offset: 3px;
+    }
+
+    .agree.shake{
+      border-color: rgba(236,72,153,.35);
+      animation: shake .32s var(--ease);
+    }
+    @keyframes shake{
+      0%{ transform: translate3d(0,0,0); }
+      25%{ transform: translate3d(-6px,0,0); }
+      55%{ transform: translate3d(6px,0,0); }
+      100%{ transform: translate3d(0,0,0); }
+    }
+
+    .formRow{
+      display:flex;
+      gap:10px;
+      flex-wrap:wrap;
+      align-items:center;
+    }
+
+    .payBtn{
+      width: 100%;
+      height: 50px;
+      border-radius: 999px;
+      border: 1px solid rgba(109,94,252,.28);
+      background: linear-gradient(135deg, rgba(109,94,252,.92), rgba(167,139,250,.88));
+      color: #fff;
+      font-weight: 980;
+      font-size: 14px;
+      letter-spacing:.2px;
+      cursor:pointer;
+      box-shadow: 0 20px 80px rgba(109,94,252,.22);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      gap:10px;
+      user-select:none;
+      transition: transform .12s var(--ease), box-shadow .25s var(--ease);
+      background-size: 170% 170%;
+      animation: payPulse 7s linear infinite;
+    }
+    .payBtn:active{ transform: scale(.99); }
+
+    .payBtn[disabled]{
+      opacity:.62;
+      cursor:not-allowed;
+      transform:none;
+      box-shadow: 0 12px 40px rgba(109,94,252,.12);
+      animation: none;
+    }
+
+    @keyframes payPulse{
+      0%{ background-position: 0% 50%; }
+      50%{ background-position: 100% 50%; }
+      100%{ background-position: 0% 50%; }
+    }
+
+    .hint{
+      font-size: 12px;
+      color: rgba(11,18,32,.62);
+      font-weight: 650;
+      line-height: 1.35;
+      margin: 0;
+    }
+
+    .status{
+      border-radius: 18px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.70);
+      padding: 12px;
+      display:none;
+      gap:10px;
+      align-items:flex-start;
+    }
+    .status.show{ display:flex; }
+    .status i{
+      width: 26px; height: 26px;
+      border-radius: 999px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.74);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      font-style: normal;
+      flex: 0 0 26px;
+    }
+    .status b{ font-size: 12px; }
+    .status span{ display:block; margin-top:4px; font-size: 12px; color: rgba(11,18,32,.65); font-weight: 650; line-height: 1.35; }
+
+    .trustPay{
+      margin-top: 10px;
+      display:flex;
+      flex-wrap:wrap;
+      gap:10px;
+      align-items:center;
+    }
+
+    .yoo{
+      display:inline-flex;
+      align-items:center;
+      gap:10px;
+      padding: 10px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.70);
+      font-weight: 900;
+      font-size: 12px;
+      color: rgba(11,18,32,.66);
+      box-shadow: 0 14px 50px rgba(2,6,23,.06);
+    }
+    .yoo .mark{
+      width: 10px; height: 10px;
+      border-radius: 999px;
+      background: rgba(109,94,252,.62);
+      box-shadow: 0 0 0 6px rgba(109,94,252,.10);
+    }
+
+    /* FAQ accordion */
+    .faq{
+      position:relative;
+      margin-top: 14px;
+      display:grid;
+      gap: 10px;
+    }
+    .q{
+      border-radius: 22px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.72);
+      box-shadow: 0 14px 50px rgba(2,6,23,.06);
+      overflow:hidden;
+    }
+    .q button{
+      width:100%;
+      min-height: 52px;
+      padding: 14px 14px;
+      border:0;
+      background: transparent;
+      cursor:pointer;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+      font-weight: 950;
+      color: rgba(11,18,32,.86);
+      font-size: 13px;
+      text-align:left;
+    }
+    .q button span{
+      display:flex;
+      align-items:center;
+      gap:10px;
+      min-width: 0;
+    }
+    .q button small{
+      width: 28px; height: 28px;
+      border-radius: 999px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.72);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      font-weight: 980;
+      font-size: 14px;
+      flex: 0 0 28px;
+    }
+    .q .a{
+      padding: 0 14px 14px;
+      color: rgba(11,18,32,.66);
+      font-size: 12.5px;
+      line-height: 1.5;
+      font-weight: 650;
+      display:none;
+    }
+    .q.open .a{ display:block; }
+    .q .chev{
+      width: 30px; height: 30px;
+      border-radius: 999px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.72);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      flex: 0 0 30px;
+      transition: transform .2s var(--ease);
+    }
+    .q.open .chev{ transform: rotate(180deg); }
+
+    /* =========================================================
+       FINAL CTA — not сухой: “meaningful ritual” block
+       ========================================================= */
+
+    .finalStage{
+      border-radius: 34px;
+      border: 1px solid rgba(11,18,32,.10);
+      background:
+        radial-gradient(860px 560px at 30% 20%, rgba(255,255,255,.92), rgba(255,255,255,0) 62%),
+        radial-gradient(760px 560px at 82% 60%, rgba(109,94,252,.16), rgba(255,255,255,0) 72%),
+        radial-gradient(760px 560px at 22% 80%, rgba(167,139,250,.14), rgba(255,255,255,0) 72%),
+        rgba(255,255,255,.70);
+      box-shadow: 0 28px 120px rgba(2,6,23,.12);
+      overflow:hidden;
+      position:relative;
+    }
+    .finalStage::before{
+      content:"";
+      position:absolute;
+      inset:-90px;
+      background:
+        radial-gradient(closest-side at 55% 35%, rgba(109,94,252,.22), transparent 62%),
+        radial-gradient(closest-side at 30% 80%, rgba(167,139,250,.18), transparent 64%);
+      filter: blur(30px);
+      opacity:.75;
+      pointer-events:none;
+    }
+
+    .finalInner{
+      position:relative;
+      padding: 18px;
+      display:grid;
+      grid-template-columns: 1.05fr .95fr;
+      gap: 16px;
+      align-items:center;
+    }
+    @media (max-width: 980px){
+      .finalInner{ grid-template-columns: 1fr; }
+    }
+
+    .finalBig{
+      margin:0;
+      font-size: clamp(22px, 4.2vw, 40px);
+      line-height: 1.05;
+      letter-spacing: -0.8px;
+      font-weight: 980;
+    }
+    .finalBig em{
+      font-family: var(--font-accent);
+      font-style: normal;
+      font-weight: 700;
+    }
+    .finalBig .shine{
+      background: var(--gradA);
+      background-size: 220% 100%;
+      animation-duration: 7.8s;
+    }
+
+    .finalText{
+      margin: 12px 0 0;
+      color: rgba(11,18,32,.68);
+      font-size: 14px;
+      line-height: 1.55;
+      font-weight: 650;
+      max-width: 70ch;
+    }
+
+    .finalRitual{
+      border-radius: 26px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.78);
+      box-shadow: 0 18px 70px rgba(2,6,23,.08);
+      padding: 16px;
+      position:relative;
+      overflow:hidden;
+    }
+    .finalRitual::after{
+      content:"";
+      position:absolute;
+      inset:-80px;
+      background: radial-gradient(closest-side at 70% 35%, rgba(109,94,252,.18), transparent 62%);
+      filter: blur(26px);
+      opacity:.75;
+      pointer-events:none;
+    }
+
+    .steps{
+      position:relative;
+      display:grid;
+      gap: 10px;
+      margin-top: 6px;
+    }
+    .step{
+      display:flex;
+      gap:12px;
+      align-items:flex-start;
+      padding: 12px 12px;
+      border-radius: 22px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.74);
+    }
+    .step .n{
+      width: 30px; height: 30px;
+      border-radius: 999px;
+      border: 1px solid rgba(11,18,32,.10);
+      background: rgba(255,255,255,.70);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      font-weight: 980;
+      font-size: 13px;
+      color: rgba(11,18,32,.80);
+      flex: 0 0 30px;
+    }
+    .step b{ display:block; font-size: 13px; }
+    .step span{
+      display:block;
+      margin-top: 6px;
+      color: rgba(11,18,32,.64);
+      font-size: 12.5px;
+      font-weight: 650;
+      line-height: 1.45;
+    }
+
+    .finalBtns{
+      position:relative;
+      display:flex;
+      gap:10px;
+      flex-wrap:wrap;
+      margin-top: 14px;
+    }
+    
+        /* =========================================================
+       REVIEWS MARQUEE
+       ========================================================= */
+
+    .reviewMarquee{
+      position: relative;
+      margin-top: 26px;
+      padding: 18px 0 4px;
+      border-radius: 34px;
+      border: 1px solid rgba(109,94,252,.18);
+      background:
+        radial-gradient(860px 540px at 18% 20%, rgba(255,255,255,.90), rgba(255,255,255,0) 60%),
+        radial-gradient(760px 580px at 88% 42%, rgba(109,94,252,.18), rgba(255,255,255,0) 74%),
+        radial-gradient(760px 560px at 18% 86%, rgba(255,120,210,.10), rgba(255,255,255,0) 72%),
+        linear-gradient(135deg, rgba(255,255,255,.70), rgba(246,241,255,.76) 34%, rgba(235,247,255,.74));
+      box-shadow: 0 28px 110px rgba(109,94,252,.10), 0 8px 28px rgba(2,6,23,.06);
+      overflow: hidden;
+      backdrop-filter: blur(10px);
+    }
+
+    .reviewMarquee::before{
+      content:"";
+      position:absolute;
+      inset:-70px;
+      background:
+        radial-gradient(closest-side at 62% 38%, rgba(109,94,252,.18), transparent 62%),
+        radial-gradient(closest-side at 26% 76%, rgba(167,139,250,.14), transparent 64%);
+      filter: blur(28px);
+      opacity:.72;
+      pointer-events:none;
+    }
+
+    .reviewMarquee::after{
+      content:"";
+      position:absolute;
+      inset:0;
+      border-radius: inherit;
+      padding:1px;
+      background: linear-gradient(120deg,
+        rgba(255,112,168,.24),
+        rgba(255,186,97,.20),
+        rgba(106,204,255,.22),
+        rgba(162,124,255,.28));
+      -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      pointer-events:none;
+      opacity:.74;
+    }
+
+    .reviewGlow{
+      position:absolute;
+      inset:-90px -40px;
+      background:
+        radial-gradient(closest-side at 18% 28%, rgba(255,255,255,.78), transparent 62%),
+        radial-gradient(closest-side at 84% 42%, rgba(109,94,252,.14), transparent 64%),
+        radial-gradient(closest-side at 44% 84%, rgba(167,139,250,.14), transparent 66%);
+      filter: blur(34px);
+      opacity:.72;
+      pointer-events:none;
+    }
+
+    .reviewHead{
+      position:relative;
+      z-index:1;
+      padding: 0 16px 14px;
+      text-align:center;
+    }
+
+    .reviewHead .kicker{
+      margin: 0 auto;
+    }
+
+    .reviewTitle{
+  margin: 16px 0 0;
+  font-size: clamp(22px, 4vw, 34px);
+  line-height: 1.08;
+  letter-spacing: -0.6px;
+  font-weight: 980;
+}
+
+.reviewAccent{
+  font-family: var(--font-accent);
+  font-weight: 800;
+  letter-spacing: -0.8px;
+  font-style: italic;
+  font-size: inherit;
+  line-height: inherit;
+  display:inline-block;
+  vertical-align: baseline;
+  padding-inline: .03em;
+  margin-inline: -.02em;
+  text-shadow: 0 14px 44px rgba(109,94,252,.16);
+}
+
+.reviewMarqueeViewport{
+  position: relative;
+  z-index: 1;
+  overflow: hidden;
+  padding: 6px 0 14px;
+  mask-image: linear-gradient(to right, transparent 0, black 5%, black 95%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, transparent 0, black 5%, black 95%, transparent 100%);
+}
+
+.reviewTrack{
+  display: flex;
+  width: max-content;
+  will-change: transform;
+  animation: reviewLoop 120s linear infinite;
+  transform: translate3d(0,0,0);
+  backface-visibility: hidden;
+}
+
+.reviewGroup{
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+  flex-shrink: 0;
+  padding: 2px 7px;
+}
+
+.reviewCard{
+  flex: 0 0 320px;
+  min-height: 180px;
+  padding: 16px 16px 15px;
+  border-radius: 24px;
+  border: 1px solid rgba(11,18,32,.10);
+  background: linear-gradient(180deg, rgba(255,255,255,.84), rgba(255,255,255,.70));
+  box-shadow: 0 18px 52px rgba(2,6,23,.07);
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+}
+
+.reviewCard::before{
+  content: "";
+  position: absolute;
+  inset: -60px;
+  background: radial-gradient(closest-side at 72% 36%, rgba(109,94,252,.16), transparent 62%);
+  filter: blur(24px);
+  opacity: .78;
+  pointer-events: none;
+}
+
+.reviewCard::after{
+  content: "“";
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  font-size: 56px;
+  line-height: 1;
+  font-family: var(--font-accent);
+  color: rgba(109,94,252,.14);
+  pointer-events: none;
+}
+
+.reviewName{
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  padding: 8px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(11,18,32,.10);
+  background: rgba(255,255,255,.72);
+  color: rgba(11,18,32,.80);
+  font-size: 12px;
+  font-weight: 950;
+  letter-spacing: .15px;
+  box-shadow: 0 10px 28px rgba(2,6,23,.05);
+}
+
+.reviewName::before{
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(109,94,252,.58);
+  box-shadow: 0 0 0 6px rgba(109,94,252,.10);
+  flex: 0 0 8px;
+}
+
+.reviewCard p{
+  position: relative;
+  z-index: 1;
+  margin: 14px 0 0;
+  color: rgba(11,18,32,.74);
+  font-size: 14px;
+  line-height: 1.55;
+  font-weight: 700;
+  text-wrap: pretty;
+}
+
+.reviewTrack:hover{
+  animation-play-state: paused;
+}
+
+@keyframes reviewLoop{
+  from{
+    transform: translate3d(0,0,0);
+  }
+  to{
+    transform: translate3d(-50%,0,0);
+  }
+}
+
+@media (max-width: 860px){
+  .reviewMarquee{
+    margin-top: 22px;
+    border-radius: 28px;
+  }
+
+  .reviewHead{
+    padding: 0 12px 12px;
+  }
+
+  .reviewLead{
+    font-size: 13px;
+    max-width: 34ch;
+  }
+
+  .reviewTrack{
+    animation-duration: 138s;
+  }
+
+  .reviewGroup{
+    gap: 12px;
+    padding: 2px 6px;
+  }
+
+  .reviewCard{
+    flex-basis: 280px;
+    min-height: 172px;
+    border-radius: 22px;
+    padding: 14px;
+  }
+
+  .reviewCard p{
+    font-size: 13.5px;
+    line-height: 1.5;
+  }
+}
+
+@media (max-width: 520px){
+  .reviewMarquee{
+    margin-top: 18px;
+    padding-top: 16px;
+    border-radius: 24px;
+  }
+
+  .reviewTitle{
+    font-size: clamp(20px, 6.2vw, 26px);
+  }
+
+  .reviewLead{
+    font-size: 12.5px;
+    max-width: 28ch;
+  }
+
+  .reviewMarqueeViewport{
+    padding-bottom: 12px;
+  }
+
+  .reviewTrack{
+    animation-duration: 152s;
+  }
+
+  .reviewGroup{
+    gap: 10px;
+    padding: 2px 5px;
+  }
+
+  .reviewCard{
+    flex-basis: 248px;
+    min-height: 164px;
+    padding: 13px 13px 14px;
+  }
+
+  .reviewName{
+    font-size: 11.5px;
+    padding: 7px 9px;
+  }
+
+  .reviewCard p{
+    margin-top: 12px;
+    font-size: 13px;
+    line-height: 1.48;
+  }
+}
+
+@media (prefers-reduced-motion: reduce){
+  .reviewTrack{
+    animation: none;
+    display: block;
+  }
+
+  .reviewGroup{
+    width: max-content;
+    overflow: auto;
+    padding-bottom: 2px;
+  }
+
+  .reviewMarqueeViewport{
+    overflow: auto;
+    mask-image: none;
+    -webkit-mask-image: none;
+  }
+
+  .reviewCard{
+    flex: 0 0 min(320px, 86vw);
+  }
+}
+    
+    /* =========================================================
+       FOOTER
+       ========================================================= */
+
+    footer{
+      padding: 24px 0 40px;
+      color: rgba(11,18,32,.62);
+      font-size: 12.5px;
+      font-weight: 650;
+    }
+    .footRow{
+      display:flex;
+      flex-wrap:wrap;
+      gap:10px 14px;
+      align-items:center;
+      justify-content:space-between;
+      border-top: 1px solid rgba(11,18,32,.10);
+      padding-top: 14px;
+    }
+    .footLinks{
+      display:flex;
+      flex-wrap:wrap;
+      gap:10px 14px;
+      align-items:center;
+    }
+    .footLinks a{
+      text-decoration: underline;
+      text-decoration-color: rgba(109,94,252,.30);
+      text-underline-offset: 3px;
+    }
+
+   
+    /* =========================================================
+       Small helpers
+       ========================================================= */
+
+    .space8{ height:8px; }
+    .space12{ height:12px; }
+    .space18{ height:18px; }
+
+    .note{
+      color: rgba(11,18,32,.62);
+      font-size: 12.5px;
+      line-height: 1.45;
+      font-weight: 650;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- background -->
+  <div class="sky" aria-hidden="true">
+    <div class="rainbowLayer r1" id="rainbow1"></div>
+    <div class="rainbowLayer r2" id="rainbow2"></div>
+    <div class="chaosField" id="chaosField"></div>
+    <div class="cloudLayer layer1" id="cloud1"></div>
+    <div class="cloudLayer layer2" id="cloud2"></div>
+    <div class="skyAura a1" id="aura1"></div>
+    <div class="skyAura a2" id="aura2"></div>
+  </div>
+
+  <!-- header brow -->
+  <div class="topBrow">
+    <div class="brow" role="navigation" aria-label="Основное меню">
+      <div class="brand">
+        <div class="logo">@mind</div>
+        <div class="tagline"></div>
+      </div>
+
+      
+
+      <div class="ctaTop">
+        <button class="btn menuToggle" id="menuToggle" type="button" aria-expanded="false" aria-controls="menuPanel" aria-label="Открыть меню">
+          <span class="menuIcon" aria-hidden="true"><i></i></span>
+        </button>
+        <div class="menuPanel" id="menuPanel" aria-label="Мобильное меню">
+          <a href="#why" data-menu-link>Что это?</a>
+          <a href="#faq" data-menu-link>FAQ</a>
+          <a href="#support" data-menu-link>Поддержка</a>
+          <a href="#policy" data-menu-link>Политика</a>
+          </div>
+      </div>
+    </div>
+  </div>
+  
+  <!-- HERO -->
+  <header class="section hero" id="top">
+    <div class="wrap">
+      <div class="heroAmbient" aria-hidden="true">
+        <i></i><i></i><i></i><i></i><i></i><i></i>
+      </div>
+      <div class="heroGrid">
+        <div class="heroLeft reveal">
+          <h1 class="headline">
+            <span class="headlineItalic">Вместо накручивания</span> <span class="accentWord shine">вращай</span>
+          </h1>
+
+          <p class="sub">
+            <b>@mind</b> — дневник самопрограммирования
+          </p>
+
+          <div class="heroMeta">
+            <div class="priceBlock" aria-label="Цена">
+              <span class="old">1490 ₽</span>
+              <span class="new"><span class="shine">990 ₽</span> навсегда</span>
+            </div>
+
+            <div class="heroBtns">
+              <button class="btn btnPrimary" id="ctaHeroBtn" type="button">Купить доступ</button>
+            </div>
+          </div>
+
+          <div class="heroRight heroInlineVideo reveal" aria-hidden="true">
+            <div class="heroVideoWrap">
+              <video
+                class="heroVideo"
+                autoplay
+                loop
+                muted
+                playsinline
+                preload="auto"
+                disablepictureinpicture
+                controlslist="nodownload nofullscreen noplaybackrate"
+                tabindex="-1"
+                aria-hidden="true"
+              >
+                <source src="sphera.MOV" type="video/quicktime" />
+                <source src="sphera.MOV" type="video/mp4" />
+              </video>
+            </div>
+          </div>
+        </div>
+      </div>
+            <section class="reviewMarquee reveal" aria-labelledby="reviewsTitle">
+        <div class="reviewGlow" aria-hidden="true"></div>
+
+        <div class="reviewHead">
+          <div class="kicker"><span class="kdot"></span> Отзывы</div>
+          <h2 class="reviewTitle" id="reviewsTitle">
+            Люди возвращаются в <span class="reviewAccent shine">спокойное состояние</span> быстрее
+          </h2>
+          <p class="reviewLead">
+            Короткие реальные сценарии того, за что ценят @mind: интерфейс, дневник, медитации, аффирмации и ощущение порядка внутри.
+          </p>
+        </div>
+
+        <div class="reviewMarqueeViewport" aria-label="Отзывы пользователей">
+  <div class="reviewTrack">
+    <div class="reviewGroup">
+      <article class="reviewCard">
+        <div class="reviewName">Роман З.</div>
+        <p>Очень красивый интерфейс. Функция медитации буквально спасла меня в период сильной тревожности.</p>
+      </article>
+
+      <article class="reviewCard">
+        <div class="reviewName">Елена Ч.</div>
+        <p>Никогда раньше не видела настолько удобного приложения, где можно быстро выгрузить мысли и сразу почувствовать облегчение.</p>
+      </article>
+
+      <article class="reviewCard">
+        <div class="reviewName">Евгений Е.</div>
+        <p>Отдельное спасибо за аффирмации. Наконец-то нашёл место, где их можно хранить не хаотично, а в одной красивой системе.</p>
+      </article>
+
+      <article class="reviewCard">
+        <div class="reviewName">Марина С.</div>
+        <p>Редко покупаю что-то импульсивно, но тут вообще не пожалела. Всё очень аккуратно, продуманно и реально успокаивает.</p>
+      </article>
+
+      <article class="reviewCard">
+        <div class="reviewName">Андрей П.</div>
+        <p>Понравилось, что приложение не перегружено. Открыл, написал мысль, зафиксировал состояние — и голова уже не так шумит.</p>
+      </article>
+
+      <article class="reviewCard">
+        <div class="reviewName">Виктория Л.</div>
+        <p>Для меня @mind стал чем-то между личным дневником и точкой опоры. Очень приятное ощущение после каждого использования.</p>
+      </article>
+
+      <article class="reviewCard">
+        <div class="reviewName">Дмитрий К.</div>
+        <p>Сначала купил из-за дизайна, а остался из-за пользы. Интерфейс цепляет, но главное — приложение действительно собирает мысли в порядок.</p>
+      </article>
+
+      <article class="reviewCard">
+        <div class="reviewName">Ольга Н.</div>
+        <p>Функция распределения по секторам очень сильная. Когда тревога разложена по категориям, она уже не кажется такой огромной.</p>
+      </article>
+
+      <article class="reviewCard">
+        <div class="reviewName">Илья Т.</div>
+        <p>Очень зашла идея с прогрессом по записям. Видишь не просто текст, а то, как реально меняется твоё состояние со временем.</p>
+      </article>
+
+      <article class="reviewCard">
+        <div class="reviewName">Ксения В.</div>
+        <p>Это первое приложение такого типа, которым мне действительно хочется пользоваться каждый день. Всё мягкое, понятное и не раздражает.</p>
+      </article>
+
+      <article class="reviewCard">
+        <div class="reviewName">Никита А.</div>
+        <p>Медитация внутри — очень сильное решение. Не нужно уходить в другие приложения, всё собрано в одном месте и работает как единый ритуал.</p>
+      </article>
+
+      <article class="reviewCard">
+        <div class="reviewName">Татьяна М.</div>
+        <p>После нескольких дней использования стало легче отслеживать мысли и не проваливаться в них целиком. Для меня это уже стоило покупки.</p>
+      </article>
+    </div>
+
+    <div class="reviewGroup" aria-hidden="true">
+      <article class="reviewCard">
+        <div class="reviewName">Роман З.</div>
+        <p>Очень красивый интерфейс. Функция медитации буквально спасла меня в период сильной тревожности.</p>
+      </article>
+
+      <article class="reviewCard">
+        <div class="reviewName">Елена Ч.</div>
+        <p>Никогда раньше не видела настолько удобного приложения, где можно быстро выгрузить мысли и сразу почувствовать облегчение.</p>
+      </article>
+
+      <article class="reviewCard">
+        <div class="reviewName">Евгений Е.</div>
+        <p>Отдельное спасибо за аффирмации. Наконец-то нашёл место, где их можно хранить не хаотично, а в одной красивой системе.</p>
+      </article>
+
+      <article class="reviewCard">
+        <div class="reviewName">Марина С.</div>
+        <p>Редко покупаю что-то импульсивно, но тут вообще не пожалела. Всё очень аккуратно, продуманно и реально успокаивает.</p>
+      </article>
+
+      <article class="reviewCard">
+        <div class="reviewName">Андрей П.</div>
+        <p>Понравилось, что приложение не перегружено. Открыл, написал мысль, зафиксировал состояние — и голова уже не так шумит.</p>
+      </article>
+
+      <article class="reviewCard">
+        <div class="reviewName">Виктория Л.</div>
+        <p>Для меня @mind стал чем-то между личным дневником и точкой опоры. Очень приятное ощущение после каждого использования.</p>
+      </article>
+
+      <article class="reviewCard">
+        <div class="reviewName">Дмитрий К.</div>
+        <p>Сначала купил из-за дизайна, а остался из-за пользы. Интерфейс цепляет, но главное — приложение действительно собирает мысли в порядок.</p>
+      </article>
+
+      <article class="reviewCard">
+        <div class="reviewName">Ольга Н.</div>
+        <p>Функция распределения по секторам очень сильная. Когда тревога разложена по категориям, она уже не кажется такой огромной.</p>
+      </article>
+
+      <article class="reviewCard">
+        <div class="reviewName">Илья Т.</div>
+        <p>Очень зашла идея с прогрессом по записям. Видишь не просто текст, а то, как реально меняется твоё состояние со временем.</p>
+      </article>
+
+      <article class="reviewCard">
+        <div class="reviewName">Ксения В.</div>
+        <p>Это первое приложение такого типа, которым мне действительно хочется пользоваться каждый день. Всё мягкое, понятное и не раздражает.</p>
+      </article>
+
+      <article class="reviewCard">
+        <div class="reviewName">Никита А.</div>
+        <p>Медитация внутри — очень сильное решение. Не нужно уходить в другие приложения, всё собрано в одном месте и работает как единый ритуал.</p>
+      </article>
+
+      <article class="reviewCard">
+        <div class="reviewName">Татьяна М.</div>
+        <p>После нескольких дней использования стало легче отслеживать мысли и не проваливаться в них целиком. Для меня это уже стоило покупки.</p>
+      </article>
+    </div>
+  </div>
+</div>
+      </section>
+      <div class="divider"></div>
+    </div>
+  </header>
+
+  <!-- WHY -->
+  <section class="section" id="why">
+    <div class="wrap">
+      <h2 class="bigType reveal">
+        Не “мотивация”, а <em class="shine">структура</em> — и от неё становишься сильней.
+      </h2>
+      <p class="lead reveal">
+        Твоя тревога не от мыслей, а от их бесформенности. @mind делает простую вещь:
+        превращает “ком в голове” в понятные категории, записи и метки.
+      </p>
+
+      <div class="whyGrid">
+        <div class="whyLeft reveal">
+          <div class="whyLeftInner">
+            <div class="whyNote">
+              <strong>1. Вынос мыслей снижает внутреннее напряжение</strong>
+              <p>Когда мысль оформлена в текст, она перестаёт “гоняться” по кругу. Ты видишь её как объект, а не как шум.</p>
+            </div>
+
+            <div class="whyNote">
+              <strong>2. Фиксация эмоций повышает осознанность</strong>
+              <p>Называние эмоции — это навык. Он снижает хаос: “со мной происходит X”, а не “со мной всё плохо”.</p>
+            </div>
+
+            <div class="whyNote">
+              <strong>3. Прогресс формирует чувство контроля</strong>
+              <p>Мелкая шкала прогресса психологически даёт точку опоры: ты не гадаешь “как было”, ты видишь динамику.</p>
+            </div>
+
+            <div class="whyNote">
+              <strong>4. Короткая медитация возвращает в тело</strong>
+              <p>Не нужно 30 минут. 3–8 минут уже меняют состояние: внимание перестаёт быть заложником мыслей и ты становишься легче.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="whyRight">
+        </div>
+      </div>
+
+      <div class="divider"></div>
+    </div>
+  </section>
+
+  <!-- INSIDE -->
+  <section class="section" id="inside">
+    <div class="wrap">
+      <div class="kicker reveal"><span class="kdot"></span> Что внутри @mind</div>
+      <h2 class="bigType reveal">
+        Инструменты, которые <em>не требуют</em> чрезмерной воли.
+      </h2>
+      <p class="lead reveal">
+        Ты получаешь интерфейс,
+        который помогает стать тем, кем представляешь себя.
+      </p>
+
+      <div class="inside">
+        <div class="insideCopy reveal">
+          <div class="featureList">
+            <div class="fItem">
+              <div class="fIcon">🌀</div>
+              <div class="fText">
+                <b>Сфера</b>
+                <span>выбираешь состояние/тему → сразу пишешь туда, куда нужно</span>
+              </div>
+            </div>
+
+            <div class="fItem">
+              <div class="fIcon">📓</div>
+              <div class="fText">
+                <b>Дневник записей</b>
+                <span>удобный список, закрепления, удаление, фильтр по секторам</span>
+              </div>
+            </div>
+
+            <div class="fItem">
+              <div class="fIcon">📊</div>
+              <div class="fText">
+                <b>Прогресс</b>
+                <span>шкала по каждой записи и общий процент — видно, что меняется</span>
+              </div>
+            </div>
+
+            <div class="fItem">
+              <div class="fIcon">🧘</div>
+              <div class="fText">
+                <b>Медитация</b>
+                <span>короткие сессии и способ очиститься</span>
+              </div>
+            </div>
+
+            <div class="fItem">
+              <div class="fIcon">✨</div>
+              <div class="fText">
+                <b>Библиотека аффирмаций</b>
+                <span>Фразы, которые напоминают твой путь и возвращают фокус</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="hScroll reveal" aria-label="Короткие сценарии">
+            <div class="hCard">
+              <b>Тревога → запись</b>
+              <p>Выбрал “Тревога”, написал 6 строк, отметил прогресс. Больше этим тебя не напугать.</p>
+            </div>
+            <div class="hCard">
+              <b>Хаос → ясность</b>
+              <p>Разложил мысли по секторам. Появилось ощущение, что “со мной всё нормально”.</p>
+            </div>
+            <div class="hCard">
+              <b>Срыв → тело</b>
+              <p>Запустил 5 минут дыхания. Вернул внимание в тело, затем дописал мысль в дневник.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+    </div>
+  </section>
+
+  
+
+  <!-- BUY -->
+  <section class="section" id="buy">
+    <div class="wrap">
+      <div class="kicker reveal"><span class="kdot"></span> Покупка</div>
+      <h2 class="bigType">
+        Доступ навсегда — <em class="shine">одна оплата</em>, один шаг.
+      </h2>
+      <p class="lead reveal">
+        После оплаты персональная ссылка автоматически приходит на email.
+      </p>
+
+      <div class="buyStage reveal">
+        <div class="buyInner">
+          <div class="buyLeft">
+            <h3 class="buyTitle">
+              Купить @mind
+            </h3>
+            <p class="buyDesc">
+              Введи email — туда придёт Ваша персональная ссылка на приложение.
+            </p>
+
+            <div class="buyPrice" aria-label="Цена">
+              <div class="badge">
+                <span class="old">1490 ₽</span>
+                <strong>→ <span class="shine">990 ₽</span></strong>
+              </div>
+              <div class="badge">Доступ: <strong>пожизненно</strong></div>
+              <div class="badge">Доставка: <strong>email</strong></div>
+            </div>
+
+            <form class="form" id="payForm" novalidate>
+              <div class="field">
+                <div class="label">Email для получения доступа</div>
+                <input class="input" id="email" name="email" type="email" inputmode="email" autocomplete="email"
+                       placeholder="you@example.com" aria-label="Email" required />
+              </div>
+
+              <div class="agree" id="agreeBox">
+                <input id="agree" type="checkbox" />
+                <p>
+                  Я согласен(а) с <a href="offer.html" id="offerLink" target="_blank" rel="noopener">офертой</a> и <a href="policy.html" id="policyLink" target="_blank" rel="noopener">политикой</a>.
+                </p>
+              </div>
+
+              <button class="payBtn" id="payBtn" type="submit">
+                Перейти к оплате
+              </button>
+
+              <div class="status" id="statusBox" role="status" aria-live="polite">
+                <i id="statusIcon">⏳</i>
+                <div>
+                  <b id="statusTitle">Готовим оплату…</b>
+                  <span id="statusText">Пожалуйста, подожди пару секунд.</span>
+                </div>
+              </div>
+              <p class="hint">Если письмо с персональной ссылкой не пришло — проверьте папку "Спам"</p>
+            </form>
+          </div>
+
+          <div class="buyRight">
+            <h3 class="buyTitle">Вопросы, которые обычно задают</h3>
+            <p class="buyDesc">
+              Коротко и по делу — чтобы у Вас не оставалось тревоги перед приобретением.
+            </p>
+
+            <div class="faq" id="faq">
+              <div class="q">
+                <button type="button" aria-expanded="false">
+                  <span><small>1</small> Это приложение или сайт?</span>
+                  <div class="chev">+</div>
+                </button>
+                <div class="a">
+                  Это <b>веб-приложение</b>. Можно добавить на экран телефона (iPhone/Android), возможно вы уже сталкивались с подобным при установке приложений банков.
+                </div>
+              </div>
+
+              <div class="q">
+                <button type="button" aria-expanded="false">
+                  <span><small>2</small> Что если письмо не пришло?</span>
+                  <div class="chev">+</div>
+                </button>
+                <div class="a">
+                  Проверь папку “Спам/Промоакции”. Если не пришло в течение 5 минут — напиши на <b id="supportEmailInline">support@yourdomain.ru</b>,
+                  и мы отправим доступ повторно.
+                </div>
+              </div>
+
+              <div class="q">
+                <button type="button" aria-expanded="false">
+                  <span><small>3</small> Доступ навсегда?</span>
+                  <div class="chev">+</div>
+                </button>
+                <div class="a">
+                  Да. Эта покупка даёт <b>пожизненный доступ</b> к @mind и закрытому сообществу.
+                </div>
+              </div>
+
+              <div class="q">
+                <button type="button" aria-expanded="false">
+                  <span><small>4</small> На каких устройствах работает?</span>
+                  <div class="chev">+</div>
+                </button>
+                <div class="a">
+                  На телефоне и на ПК. На iPhone и Android можно “Добавить на экран Домой” — будет открываться как приложение.
+                </div>
+              </div>
+            </div>
+
+            <div class="space12"></div>
+            <p class="note">
+             @mind — инструмент самоорганизации и саморефлексии.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+    </div>
+  </section>
+
+  <footer id="policy">
+    <div class="wrap">
+     <div class="footRow" id="support">
+        <div class="footLinks">
+          <a href="offer.html" aria-label="Оферта">Оферта</a>
+          <a href="policy.html" aria-label="Политика конфиденциальности">Политика</a>
+          <a href="#support" aria-label="Контакты поддержки" id="supportEmailLink">support@yourdomain.ru</a>
+        </div>
+      <div>© <span id="year"></span> @mind</div>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    /* =========================
+       CONFIG
+       ========================= */
+    const PRICE_RUB = 990;
+    const PRICE_OLD_RUB = 1490;
+    const PRICE_KOPEKS = 99000;
+
+    const API_CREATE_PAYMENT = "/api/create-payment";
+    const API_RESEND_ACCESS  = "/api/resend"; // optional (если реализуешь)
+
+    const SUPPORT_EMAIL = "support@yourdomain.ru";
+    const APP_URL = "https://vaoaoadim.github.io/mind/";
+
+    // MOCK: true — имитирует успешный редирект (без бэка)
+    // default must be false
+    const MOCK_MODE = false;
+
+    /* =========================
+       Helpers
+       ========================= */
+    const $ = (sel, root=document) => root.querySelector(sel);
+    const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
+
+    function isReducedMotion(){
+      return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    }
+
+    function scrollToId(id){
+      const el = document.getElementById(id);
+      if(!el) return;
+      el.scrollIntoView({behavior: isReducedMotion() ? "auto" : "smooth", block:"start"});
+    }
+
+    function validateEmail(email){
+      // pragmatic email check
+      return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i.test(String(email || "").trim());
+    }
+
+    function setStatus(kind, title, text){
+      const box = $("#statusBox");
+      const icon = $("#statusIcon");
+      const t = $("#statusTitle");
+      const d = $("#statusText");
+
+      const map = {
+        loading: "⏳",
+        success: "✅",
+        error: "⚠️",
+        info: "ℹ️"
+      };
+
+      box.classList.add("show");
+      icon.textContent = map[kind] || "ℹ️";
+      t.textContent = title || "";
+      d.textContent = text || "";
+    }
+
+    function clearStatus(){
+      const box = $("#statusBox");
+      box.classList.remove("show");
+    }
+
+    function lockPay(lock){
+      $("#payBtn").disabled = !!lock;
+      $("#email").disabled = !!lock;
+      $("#agree").disabled = !!lock;
+    }
+
+    /* =========================
+       Reveal on scroll
+       ========================= */
+    (function initReveal(){
+      if(isReducedMotion()){
+        $$(".reveal").forEach(el => el.classList.add("in"));
+        return;
+      }
+
+      const io = new IntersectionObserver((entries) => {
+        for(const e of entries){
+          if(e.isIntersecting){
+            e.target.classList.add("in");
+            io.unobserve(e.target);
+          }
+        }
+      }, {threshold: 0.14});
+
+      $$(".reveal").forEach(el => io.observe(el));
+    })();
+
+    /* =========================
+       Cloud parallax (very light)
+       ========================= */
+    (function initSkyMotion(){
+      if(isReducedMotion()) return;
+
+      const c1 = $("#cloud1");
+      const c2 = $("#cloud2");
+      const aura1 = $("#aura1");
+      const aura2 = $("#aura2");
+      const rainbow1 = $("#rainbow1");
+      const rainbow2 = $("#rainbow2");
+      const chaosField = $("#chaosField");
+      const orb = $("#orb");
+      if(!c1 || !c2) return;
+
+      let t0 = performance.now();
+      let lastScrollY = window.scrollY || 0;
+      let rafId = 0;
+      let active = !document.hidden;
+
+      function tick(now){
+        if(!active) return;
+        const t = (now - t0) / 1000;
+        const sy = window.scrollY || 0;
+        const dy = sy - lastScrollY;
+        lastScrollY = sy;
+
+        // gentle drift + subtle scroll coupling
+        const x1 = Math.sin(t * 0.18) * 18;
+        const y1 = Math.cos(t * 0.14) * 10 + sy * -0.02;
+
+        const x2 = Math.cos(t * 0.12) * 26;
+        const y2 = Math.sin(t * 0.10) * 14 + sy * -0.03;
+
+        c1.style.transform = `translate3d(${x1}px, ${y1}px, 0)`;
+        c2.style.transform = `translate3d(${x2}px, ${y2}px, 0)`;
+
+        if(aura1){
+          aura1.style.transform = `translate3d(${Math.sin(t*0.09)*28}px, ${sy * -0.014}px, 0) scale(${1 + Math.sin(t*0.08)*0.01})`;
+        }
+        if(aura2){
+          aura2.style.transform = `translate3d(${Math.cos(t*0.07)*32}px, ${sy * -0.02}px, 0) scale(${1 + Math.cos(t*0.06)*0.012})`;
+        }
+
+        if(rainbow1){
+          rainbow1.style.transform = `translate3d(${Math.sin(t*0.17)*40 + dy*0.24}px, ${sy * -0.028 + Math.cos(t*0.12)*16}px, 0) rotate(${Math.sin(t*0.05)*3.5}deg)`;
+        }
+        if(rainbow2){
+          rainbow2.style.transform = `translate3d(${Math.cos(t*0.13)*46 - dy*0.18}px, ${sy * -0.034 + Math.sin(t*0.09)*22}px, 0) rotate(${Math.cos(t*0.06)*4.2}deg)`;
+        }
+        if(chaosField){
+          chaosField.style.transform = `translate3d(${Math.sin(t*0.7)*18 + dy*0.7}px, ${sy * -0.046 + Math.cos(t*0.54)*14}px, 0)`;
+        }
+
+        if(orb){
+          // micro movement for orb highlight
+          const ox = (Math.sin(t*0.9) * 10) + (dy * 0.18);
+          const oy = (Math.cos(t*0.7) * 8) + (dy * 0.10);
+          orb.style.setProperty("--orbX", `${ox}px`);
+          orb.style.setProperty("--orbY", `${oy}px`);
+        }
+        rafId = requestAnimationFrame(tick);
+      }
+
+        function setActive(next){
+        if(active === next) return;
+        active = next;
+        if(active){
+          t0 = performance.now();
+          rafId = requestAnimationFrame(tick);
+        }else if(rafId){
+          cancelAnimationFrame(rafId);
+          rafId = 0;
+        }
+      }
+      document.addEventListener("visibilitychange", () => {
+        setActive(!document.hidden);
+      });
+
+      rafId = requestAnimationFrame(tick);
+    })();
+
+    /* =========================
+       Hero video keep-alive loop
+       ========================= */
+    (function initHeroVideo(){
+      const heroVideo = $(".heroVideo");
+      if(!heroVideo) return;
+
+      const keepPlaying = () => {
+        const playPromise = heroVideo.play();
+        if(playPromise && typeof playPromise.catch === "function"){
+          playPromise.catch(() => {});
+        }
+      };
+
+      heroVideo.defaultMuted = true;
+      heroVideo.muted = true;
+      heroVideo.setAttribute("playsinline", "true");
+      heroVideo.setAttribute("webkit-playsinline", "true");
+
+      heroVideo.loop = true;
+
+      heroVideo.addEventListener("pause", () => {
+        if(!document.hidden) keepPlaying();
+      });
+
+      document.addEventListener("visibilitychange", () => {
+        if(!document.hidden) keepPlaying();
+      });
+
+      keepPlaying();
+    })();
+
+    /* =========================
+       Header menu
+       ========================= */
+    (function initHeaderMenu(){
+      const toggle = $("#menuToggle");
+      const panel = $("#menuPanel");
+      if(!toggle || !panel) return;
+
+      function closeMenu(){
+        panel.classList.remove("open");
+        toggle.setAttribute("aria-expanded", "false");
+      }
+      function openMenu(){
+        panel.classList.add("open");
+        toggle.setAttribute("aria-expanded", "true");
+      }
+
+      toggle.addEventListener("click", () => {
+        const expanded = toggle.getAttribute("aria-expanded") === "true";
+        expanded ? closeMenu() : openMenu();
+      });
+
+      $$('[data-menu-link]', panel).forEach(link => {
+        link.addEventListener("click", (e) => {
+          const href = link.getAttribute("href") || "";
+          if(href.startsWith("#")){
+            e.preventDefault();
+            scrollToId(href.slice(1));
+            closeMenu();
+          }
+        });
+      });
+
+      document.addEventListener("click", (e) => {
+        if(!panel.classList.contains("open")) return;
+        if(panel.contains(e.target) || toggle.contains(e.target)) return;
+        closeMenu();
+      });
+
+      document.addEventListener("keydown", (e) => {
+        if(e.key === "Escape") closeMenu();
+      });
+    })();
+
+
+    /* =========================
+       Header CTA -> Buy
+       ========================= */
+    
+    $("#ctaHeroBtn")?.addEventListener("click", () => scrollToId("buy"));
+    $("#ctaFinalBtn")?.addEventListener("click", () => scrollToId("buy"));
+
+    
+    
+
+  
+
+    /* =========================
+       FAQ accordion
+       ========================= */
+    (function initFaq(){
+      const wrap = $("#faq");
+      if(!wrap) return;
+
+      $$(".q", wrap).forEach(item => {
+        const btn = $("button", item);
+        btn.addEventListener("click", () => {
+          const isOpen = item.classList.contains("open");
+          // close others for cleanliness
+          $$(".q", wrap).forEach(x => {
+            x.classList.remove("open");
+            const b = $("button", x);
+            b.setAttribute("aria-expanded", "false");
+          });
+          if(!isOpen){
+            item.classList.add("open");
+            btn.setAttribute("aria-expanded", "true");
+          }
+        });
+      });
+    })();
+
+    /* =========================
+       Links / year / support
+       ========================= */
+    $("#year").textContent = new Date().getFullYear();
+    $("#supportEmailLink").textContent = SUPPORT_EMAIL;
+    $("#supportEmailLink").href = `mailto:${SUPPORT_EMAIL}`;
+    $("#supportEmailInline").textContent = SUPPORT_EMAIL;
+
+    /* =========================
+       Payment Flow (YooKassa)
+       ========================= */
+    const payForm = $("#payForm");
+    const emailEl = $("#email");
+    const agreeEl = $("#agree");
+    const agreeBox = $("#agreeBox");
+
+    function requireAgreeVisual(){
+      agreeBox.classList.remove("shake");
+      // force reflow to restart animation
+      void agreeBox.offsetWidth;
+      agreeBox.classList.add("shake");
+    }
+
+    async function createPayment({email}){
+      const payload = {
+        email,
+        amount: PRICE_KOPEKS,
+        currency: "RUB",
+        description: "@mind — пожизненный доступ",
+        metadata: {
+          product: "mind_lifetime",
+          email
+        }
+      };
+
+      const res = await fetch(API_CREATE_PAYMENT, {
+        method: "POST",
+        headers: { "Content-Type":"application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      if(!res.ok){
+        const txt = await res.text().catch(() => "");
+        throw new Error(`API error: ${res.status} ${txt}`.slice(0, 220));
+      }
+
+      const data = await res.json();
+      if(!data || !data.confirmation_url){
+        throw new Error("Некорректный ответ сервера: нет confirmation_url");
+      }
+      return data.confirmation_url;
+    }
+
+    payForm?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      clearStatus();
+
+      const email = String(emailEl.value || "").trim();
+
+      // 1) email validation
+      if(!validateEmail(email)){
+        setStatus("error", "Проверь email", "Похоже, адрес введён с ошибкой. Укажи корректный email для получения доступа.");
+        emailEl.focus();
+        return;
+      }
+
+      // 2) checkbox validation (your explicit requirement)
+      if(!agreeEl.checked){
+        setStatus("info", "Нужно согласие", "Поставь галочку — без неё мы не можем запустить оплату.");
+        requireAgreeVisual();
+        agreeEl.focus();
+        return;
+      }
+
+      // 3) create payment
+      try{
+        lockPay(true);
+        setStatus("loading", "Готовим оплату…", "Сейчас откроется защищённая страница ЮKassa.");
+
+        if(MOCK_MODE){
+          // simulate success
+          await new Promise(r => setTimeout(r, 800));
+          setStatus("success", "Тестовый режим", "Имитируем переход к оплате. В реальном режиме будет редирект на ЮKassa.");
+          await new Promise(r => setTimeout(r, 700));
+          // emulate redirect
+          window.location.hash = "#buy";
+          setStatus("success", "Готово", "Если бы это был реальный платеж — после оплаты ссылка пришла бы на email.");
+          lockPay(false);
+          return;
+        }
+
+        const url = await createPayment({email});
+        // redirect to YooKassa confirmation
+        window.location.href = url;
+
+      }catch(err){
+        console.error(err);
+        setStatus(
+          "error",
+          "Не удалось запустить оплату",
+          "Сервер временно недоступен или произошла ошибка. Попробуй ещё раз через минуту. Если не получится — напиши в поддержку."
+        );
+        lockPay(false);
+      }
+    });
+
+    /* =========================
+       Tiny UX: clear status on edits
+       ========================= */
+    emailEl?.addEventListener("input", () => {
+      // keep calm: don't erase error too aggressively if user just touched
+      clearStatus();
+    });
+    agreeEl?.addEventListener("change", () => {
+      clearStatus();
+      agreeBox.classList.remove("shake");
+    });
+
+  </script>
+</body>
+</html>
