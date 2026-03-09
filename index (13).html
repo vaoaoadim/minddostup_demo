@@ -2190,6 +2190,12 @@
   margin-inline: -.02em;
   text-shadow: 0 14px 44px rgba(109,94,252,.16);
 }
+    
+.reviewLead{
+  margin: 12px auto 0;
+  max-width: 62ch;
+  text-align: center;
+}
 
 .reviewMarqueeViewport{
   position: relative;
@@ -2205,6 +2211,7 @@
   width: max-content;
   will-change: transform;
   animation: reviewLoop 120s linear infinite;
+  animation-duration: var(--review-loop-duration, 120s);
   transform: translate3d(0,0,0);
   backface-visibility: hidden;
 }
@@ -2302,7 +2309,7 @@
     transform: translate3d(0,0,0);
   }
   to{
-    transform: translate3d(-50%,0,0);
+    transform: translate3d(calc(var(--review-loop-distance, 50%) * -1),0,0);
   }
 }
 
@@ -2321,9 +2328,6 @@
     max-width: 34ch;
   }
 
-  .reviewTrack{
-    animation-duration: 138s;
-  }
 
   .reviewGroup{
     gap: 12px;
@@ -2361,10 +2365,6 @@
 
   .reviewMarqueeViewport{
     padding-bottom: 12px;
-  }
-
-  .reviewTrack{
-    animation-duration: 152s;
   }
 
   .reviewGroup{
@@ -3204,7 +3204,33 @@
     $("#ctaHeroBtn")?.addEventListener("click", () => scrollToId("buy"));
     $("#ctaFinalBtn")?.addEventListener("click", () => scrollToId("buy"));
 
-    
+
+
+    /* =========================
+       Review marquee seamless loop
+       ========================= */
+    (function initReviewMarquee(){
+      const track = document.querySelector('.reviewTrack');
+      if(!track) return;
+
+      const groups = Array.from(track.querySelectorAll('.reviewGroup'));
+      if(!groups.length) return;
+
+      function syncReviewLoop(){
+        const firstGroup = groups[0];
+        const loopDistance = firstGroup.getBoundingClientRect().width;
+        if(!loopDistance) return;
+
+        const pxPerSecond = window.innerWidth <= 520 ? 90 : window.innerWidth <= 860 ? 100 : 110;
+        const duration = Math.max(36, loopDistance / pxPerSecond);
+
+        track.style.setProperty('--review-loop-distance', `${Math.round(loopDistance)}px`);
+        track.style.setProperty('--review-loop-duration', `${duration.toFixed(2)}s`);
+      }
+
+      syncReviewLoop();
+      window.addEventListener('resize', syncReviewLoop, { passive: true });
+    })();
     
 
   
