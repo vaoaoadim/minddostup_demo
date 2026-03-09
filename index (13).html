@@ -2192,8 +2192,6 @@
 }
     
 .reviewLead{
-  margin: 12px auto 0;
-  max-width: 62ch;
   text-align: center;
 }
 
@@ -2324,7 +2322,6 @@
   }
 
   .reviewLead{
-    font-size: 13px;
     max-width: 34ch;
   }
 
@@ -3213,13 +3210,23 @@
       const track = document.querySelector('.reviewTrack');
       if(!track) return;
 
-      const groups = Array.from(track.querySelectorAll('.reviewGroup'));
-      if(!groups.length) return;
+      const baseGroup = track.querySelector('.reviewGroup');
+      if(!baseGroup) return;
 
-      function syncReviewLoop(){
-        const firstGroup = groups[0];
-        const loopDistance = firstGroup.getBoundingClientRect().width;
+      function rebuildReviewLoop(){
+        const loopDistance = baseGroup.getBoundingClientRect().width;
         if(!loopDistance) return;
+
+        Array.from(track.querySelectorAll('.reviewGroup')).slice(1).forEach(group => group.remove());
+
+        const viewport = track.parentElement?.getBoundingClientRect().width || window.innerWidth;
+        const totalGroups = Math.max(3, Math.ceil(viewport / loopDistance) + 2);
+
+        for(let i = 1; i < totalGroups; i += 1){
+          const clone = baseGroup.cloneNode(true);
+          clone.setAttribute('aria-hidden', 'true');
+          track.appendChild(clone);
+        }
 
         const pxPerSecond = window.innerWidth <= 520 ? 90 : window.innerWidth <= 860 ? 100 : 110;
         const duration = Math.max(36, loopDistance / pxPerSecond);
@@ -3228,8 +3235,8 @@
         track.style.setProperty('--review-loop-duration', `${duration.toFixed(2)}s`);
       }
 
-      syncReviewLoop();
-      window.addEventListener('resize', syncReviewLoop, { passive: true });
+      rebuildReviewLoop();
+      window.addEventListener('resize', rebuildReviewLoop, { passive: true });
     })();
     
 
