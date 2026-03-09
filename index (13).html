@@ -2213,6 +2213,7 @@
 }
 
 .reviewTrack{
+  --review-card-gap: 14px;
   display: flex;
   width: max-content;
   will-change: transform;
@@ -2225,9 +2226,11 @@
 .reviewGroup{
   display: flex;
   align-items: stretch;
-  gap: 14px;
+  gap: var(--review-card-gap);
+  padding-right: var(--review-card-gap);
   flex-shrink: 0;
-  padding: 2px 0;
+  padding-top: 2px;
+  padding-bottom: 2px;
 }
 
 .reviewCard{
@@ -2332,7 +2335,7 @@
 
   .reviewGroup{
     gap: 12px;
-     padding: 2px 0;
+    padding-right: 12px;
   }
 
   .reviewCard{
@@ -2365,7 +2368,7 @@
 
   .reviewGroup{
     gap: 10px;
-    padding: 2px 0;
+    padding-right: 10px;
   }
 
   .reviewCard{
@@ -3226,11 +3229,13 @@
           clone.setAttribute('aria-hidden', 'true');
           track.appendChild(clone);
         }
-
+        
+        const groupStyle = getComputedStyle(baseGroup);
+        const groupGap = parseFloat(groupStyle.gap) || 0;
         const pxPerSecond = window.innerWidth <= 520 ? 90 : window.innerWidth <= 860 ? 100 : 110;
         const duration = Math.max(36, loopDistance / pxPerSecond);
 
-        track.style.setProperty('--review-loop-distance', `${loopDistance.toFixed(3)}px`);
+        track.style.setProperty('--review-loop-distance', `${(loopDistance + groupGap).toFixed(3)}px`);
         track.style.setProperty('--review-loop-duration', `${duration.toFixed(2)}s`);
       }
 
